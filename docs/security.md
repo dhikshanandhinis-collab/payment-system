@@ -32,25 +32,27 @@ are listed explicitly in section 4.
 
 ## 3. Retention and deletion
 
-| Data | Retention (local defaults) | Mechanism |
+| Data | Retention (defaults) | Mechanism |
 |---|---|---|
 | Kafka source topics | 7 days (`TOPIC_RETENTION_MS`) | Topic config; replay window |
 | DLQ topic | 30 days (`TOPIC_DLQ_RETENTION_MS`) | Topic config |
-| Bronze raw events, quarantine, Silver, cases, history | Retained indefinitely locally | Financial evidence; deletion must be an approved, audited DBA procedure |
-| Published outbox rows | Retained locally | Can be purged by a DBA once published |
+| Bronze payload bytes | 90 days (`RETENTION_BRONZE_PAYLOAD_DAYS`) | `batch.retention` writes gzip NDJSON to `RETENTION_ARCHIVE_DIR`, checking every payload against its stored SHA-256 first, then blanks `payload_bytes`/`payload_json` and records `archive_uri`. The row (Kafka position, hash, ids) is kept for idempotency and Silver foreign keys. `read_archive()` restores and re-verifies |
+| `reconciliation_history` | 84 months (`RETENTION_HISTORY_MONTHS`) | Monthly RANGE partitions (migration 0007); expired months are dropped as whole partitions. Row-level DELETE stays blocked by triggers on the parent and every partition |
+| Published outbox rows | 30 days (`RETENTION_OUTBOX_DAYS`) | Deleted by `batch.retention` |
+| Silver, cases, quarantine, admin actions, dedup keys | Retained | Financial evidence; deletion is an approved DBA procedure |
 
-Production would define retention per regulatory/record-keeping requirements (e.g. multi-year for
-financial records), archive Bronze payloads to immutable storage before deletion, and run purges
-under a privileged maintenance role with audit. **No automated database purge is implemented**
-(deliberately: Silver rows reference Bronze rows, and audit tables are append-only).
+The retention job connects as the migrator (owner) role, because the runtime role deliberately cannot
+update payloads, delete or drop tables. Each batch commits only after its archive file has been
+fsynced and renamed, so a crash at worst leaves an orphan archive file and never a blanked payload
+without an archive. In production, `RETENTION_ARCHIVE_DIR` should be immutable (WORM) object storage.
 
 ## 4. Local simplifications vs. production requirements
 
-| Local | Production requirement |
+| Local | Production requirement (implemented, enabled by configuration) |
 |---|---|
-| Kafka PLAINTEXT, no authentication, single broker | TLS (SASL_SSL) for all listeners, SASL/SCRAM or mTLS auth, topic ACLs per service principal, RF=3, `min.insync.replicas=2` |
-| PostgreSQL `sslmode=disable` inside the Docker network | `sslmode=verify-full` with CA-validated certificates; private networking |
-| Passwords in a local `.env` file | Secret manager (e.g. Vault / cloud KMS-backed), rotation, short-lived credentials |
+| Kafka PLAINTEXT, no authentication, single broker | SASL_SSL/mTLS supported; `REQUIRE_SECURE_TRANSPORT=true` refuses plaintext. Still needed: topic ACLs per service principal, RF=3, `min.insync.replicas=2` |
+| PostgreSQL `sslmode=disable` inside the Docker network | `DB_SSLMODE=verify-full` with `DB_SSLROOTCERT` (and client certs) supported and enforced by `REQUIRE_SECURE_TRANSPORT` |
+| Passwords in a local `.env` file | `<NAME>_FILE` secrets; the Helm chart mounts them from an existing Secret (External Secrets / Vault) |
 | Admin authorization = allow-list env var | SSO/IAM identities, MFA, separate privileged DB role for admin tooling, four-eyes approval for corrections |
 | Grafana admin password from `.env` | SSO, RBAC |
 | Images built locally, no scanning in CI | Image signing, SBOM, vulnerability scanning (e.g. Trivy/Grype) in CI, pinned digests |

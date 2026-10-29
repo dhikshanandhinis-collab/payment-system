@@ -1,0 +1,137 @@
+{{- $root := . -}}
+{{- $workloads := dict -}}
+{{- range $name, $svc := .Values.services -}}
+{{- if $svc.enabled -}}{{- $_ := set $workloads $name $svc -}}{{- end -}}
+{{- end -}}
+{{- if .Values.simulators.enabled -}}
+{{- range $name := .Values.simulators.producers -}}
+{{- $_ := set $workloads $name (dict "command" (list "python" "-m" (printf "generators.%s" (replace "-" "_" $name))) "replicas" 1 "resources" $root.Values.simulators.resources) -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $svc := $workloads }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "recon.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "recon.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  {{- if not (and $svc.autoscaling $svc.autoscaling.enabled) }}
+  replicas: {{ $svc.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: {{ $svc.strategy | default "RollingUpdate" }}
+  selector:
+    matchLabels:
+      {{- include "recon.selector" (dict "root" $root "component" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "recon.selector" (dict "root" $root "component" $name) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+    spec:
+      {{- include "recon.podSpecCommon" $root | nindent 6 }}
+      terminationGracePeriodSeconds: {{ $svc.terminationGracePeriodSeconds | default 30 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "recon.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: {{ toJson $svc.command }}
+          envFrom:
+            {{- include "recon.envFrom" $root | nindent 12 }}
+          env:
+            {{- include "recon.env" (dict "root" $root "admin" false "name" $name) | nindent 12 }}
+            {{- range $key, $value := $svc.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 9100
+          startupProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 15
+            failureThreshold: 4
+          readinessProbe:
+            httpGet: {path: /readyz, port: metrics}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $root.Values.securityContext | nindent 12 }}
+          volumeMounts:
+            {{- include "recon.secretMounts" $root | nindent 12 }}
+            {{- if $svc.settlementVolume }}
+            - name: settlement
+              mountPath: /data/settlement
+            {{- end }}
+      volumes:
+        {{- include "recon.secretVolumes" (dict "root" $root "admin" false) | nindent 8 }}
+        {{- if $svc.settlementVolume }}
+        - name: settlement
+          persistentVolumeClaim:
+            claimName: {{ $root.Values.settlement.existingClaim }}
+        {{- end }}
+{{- if and $svc.autoscaling $svc.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "recon.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "recon.labels" $root | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "recon.fullname" $root }}-{{ $name }}
+  minReplicas: {{ $svc.autoscaling.minReplicas }}
+  # Ingestion parallelism is capped by topic partitions (TOPIC_PARTITIONS); extra consumers would sit idle.
+  maxReplicas: {{ $svc.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: {{ $svc.autoscaling.targetCPUUtilizationPercentage }}}
+{{- end }}
+{{- $min := int $svc.replicas }}
+{{- if and $svc.autoscaling $svc.autoscaling.enabled }}{{ $min = int $svc.autoscaling.minReplicas }}{{ end }}
+{{- if gt $min 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "recon.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "recon.labels" $root | nindent 4 }}
+spec:
+  minAvailable: {{ $root.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "recon.selector" (dict "root" $root "component" $name) | nindent 6 }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "recon.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "recon.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  selector:
+    {{- include "recon.selector" (dict "root" $root "component" $name) | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+{{- end }}

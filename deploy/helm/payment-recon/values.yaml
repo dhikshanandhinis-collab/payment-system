@@ -1,0 +1,145 @@
+# Kafka, PostgreSQL and the schema registry are external (managed services). This chart deploys the application.
+image:
+  repository: ghcr.io/dhikshanandhinis-collab/payment-system
+  tag: ""            # defaults to .Chart.AppVersion; pin a digest in production
+  digest: ""         # e.g. sha256:...; takes precedence over tag
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+environment: production
+logLevel: INFO
+businessTimezone: America/Toronto
+
+# Non-secret configuration, rendered into a ConfigMap. Keys are the application's environment variables.
+config:
+  REQUIRE_SECURE_TRANSPORT: "true"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-0.kafka:9093,kafka-1.kafka:9093,kafka-2.kafka:9093"
+  KAFKA_SECURITY_PROTOCOL: SASL_SSL
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_SASL_USERNAME: recon-app
+  KAFKA_SSL_CA_LOCATION: /etc/recon/tls/kafka-ca.crt
+  DB_HOST: recon-postgres.internal
+  DB_PORT: "5432"
+  DB_NAME: recon
+  DB_USER: recon_app
+  DB_SSLMODE: verify-full
+  DB_SSLROOTCERT: /etc/recon/tls/postgres-ca.crt
+  EVENT_SERIALIZATION: avro
+  SCHEMA_REGISTRY_URL: https://schema-registry.internal:8081
+  SCHEMA_REGISTRY_USERNAME: recon-app
+  SCHEMA_REGISTRY_AUTO_REGISTER: "false"   # schemas are registered by the pre-upgrade hook, not by producers
+  SCHEMA_REGISTRY_CA_LOCATION: /etc/recon/tls/registry-ca.crt
+
+# Secrets are never put in values. Create this Secret out of band (External Secrets / Vault / sealed-secrets);
+# each key is mounted as a file and passed to the app as <NAME>_FILE.
+secrets:
+  existingSecret: payment-recon-credentials
+  keys:
+    DB_PASSWORD: db-password
+    KAFKA_SASL_PASSWORD: kafka-sasl-password
+    SCHEMA_REGISTRY_PASSWORD: schema-registry-password
+  # Used only by the db-init hook and the retention CronJob.
+  adminKeys:
+    DB_SUPERUSER_PASSWORD: db-superuser-password
+    DB_MIGRATOR_PASSWORD: db-migrator-password
+    DB_REPORTING_PASSWORD: db-reporting-password
+
+# CA bundles (public certificates) mounted at /etc/recon/tls.
+tls:
+  existingSecret: payment-recon-ca
+
+services:
+  ingestion:
+    enabled: true
+    command: ["python", "-m", "ingestion.consumer"]
+    replicas: 3
+    autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 6, targetCPUUtilizationPercentage: 70}
+    terminationGracePeriodSeconds: 45
+    resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 512Mi}}
+    env:
+      INGESTION_CONSUMER_GROUP: recon-ingestion
+      INGESTION_BATCH_SIZE: "500"
+    needs: [kafka, postgres, registry]
+  reconciliation:
+    enabled: true
+    command: ["python", "-m", "processing.reconciliation_service"]
+    replicas: 2
+    autoscaling: {enabled: true, minReplicas: 2, maxReplicas: 6, targetCPUUtilizationPercentage: 70}
+    terminationGracePeriodSeconds: 45
+    resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 512Mi}}
+    env:
+      RECON_WORKER_BATCH_SIZE: "100"
+    needs: [kafka, postgres, registry]
+  settlement-adapter:
+    enabled: true
+    command: ["python", "-m", "ingestion.settlement_adapter"]
+    replicas: 1          # one reader per inbox; files are moved atomically
+    resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 256Mi}}
+    env:
+      SETTLEMENT_INBOX: /data/settlement/inbox
+      SETTLEMENT_POLL_S: "60"
+    settlementVolume: true
+    needs: [kafka, registry]
+  batch-scheduler:
+    enabled: true
+    command: ["python", "-m", "batch.scheduler"]
+    replicas: 1          # singleton
+    strategy: Recreate
+    resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 256Mi}}
+    env:
+      BATCH_DAILY_RUN_TIME: "00:30"
+      BATCH_INTRADAY_INTERVAL_S: "900"
+    needs: [postgres]
+
+# Synthetic event producers. Off for a real integration, where the source systems publish to Kafka.
+simulators:
+  enabled: false
+  producers: [mybell-producer, processor-producer, billing-producer]
+  resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 256Mi}}
+
+# Where processor settlement files arrive (e.g. an SFTP gateway writing to a shared volume).
+settlement:
+  existingClaim: payment-recon-settlement
+
+hooks:
+  dbInit: true
+  kafkaInit: true
+  registerSchemas: true
+
+retention:
+  enabled: true
+  schedule: "15 4 * * *"
+  bronzePayloadDays: 90
+  outboxDays: 30
+  historyMonths: 84
+  archiveClaim: payment-recon-archive
+
+podDisruptionBudget:
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  # Egress destinations (CIDRs of the managed Kafka, PostgreSQL and schema registry endpoints).
+  kafkaCidrs: ["10.20.0.0/24"]
+  postgresCidrs: ["10.20.1.0/24"]
+  registryCidrs: ["10.20.2.0/24"]
+  prometheusNamespaceLabel: {kubernetes.io/metadata.name: monitoring}
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+nodeSelector: {}
+tolerations: []

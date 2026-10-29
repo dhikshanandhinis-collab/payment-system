@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "recon.fullname" . }}
+  labels:
+    {{- include "recon.labels" . | nindent 4 }}
+data:
+  ENVIRONMENT: {{ .Values.environment | quote }}
+  LOG_LEVEL: {{ .Values.logLevel | quote }}
+  BUSINESS_TIMEZONE: {{ .Values.businessTimezone | quote }}
+  METRICS_PORT: "9100"
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

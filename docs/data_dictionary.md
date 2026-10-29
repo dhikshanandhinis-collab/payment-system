@@ -72,9 +72,10 @@ Unknown fields are **rejected** (not silently dropped); a new field requires a n
 | kafka_key, kafka_timestamp | text, timestamptz | yes | Broker metadata |
 | source_event_id, event_type, payment_id, event_time, schema_version | | yes | Best-effort extraction; may be NULL for invalid events |
 | ingestion_time | timestamptz | no | `clock_timestamp()` at insert |
-| payload_bytes | bytea | no | **Original bytes, never rewritten** |
-| payload_json | jsonb | yes | Parsed copy cast by PostgreSQL from the original text (exact numerics); NULL if not JSON |
-| payload_hash | char(64) | no | SHA-256 of payload_bytes |
+| payload_bytes | bytea | no | **Original bytes, never rewritten** (empty once archived) |
+| payload_json | jsonb | yes | Parsed copy cast by PostgreSQL from the original text (exact numerics); NULL if not JSON or archived |
+| payload_hash | char(64) | no | SHA-256 of payload_bytes (still identifies the bytes after archival) |
+| payload_archived_at, archive_uri | timestamptz, text | yes | Set by `batch.retention` when the payload was moved to the archive file `archive_uri` |
 | processing_status | text | no | PROCESSED, DUPLICATE_DELIVERY, DUPLICATE_BUSINESS_EVENT, QUARANTINED |
 | error_code, validation_error | text | yes | Required iff QUARANTINED (check constraint) |
 
@@ -140,6 +141,10 @@ All Silver rows carry `raw_event_id` (FK to Bronze), `event_time`, `correlation_
 | rule_version | FK reconciliation_rule_versions |
 
 ### reconciliation_history (append-only - UPDATE/DELETE/TRUNCATE blocked by trigger)
+
+Partitioned by month on `evaluated_at` (`reconciliation_history_YYYYMM`, plus a default partition as a
+safety net); PK `(history_id, evaluated_at)`. Partitions are created 3 months ahead by db-init and
+`batch.retention`; months older than `RETENTION_HISTORY_MONTHS` are dropped whole.
 
 previous_status, new_status, previous_reason_code, reason_code, computed_status, rule_version,
 trigger_type (STREAM, TIMEOUT_SWEEP, BATCH, BACKFILL, ADMIN_*), run_id (batch run / admin action),

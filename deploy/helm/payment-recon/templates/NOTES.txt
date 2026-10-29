@@ -1,0 +1,8 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} installed as {{ .Release.Name }}.
+
+Pre-install/upgrade hooks ran: database migrations, topic creation{{ if .Values.hooks.registerSchemas }}, schema registration (compatibility gate){{ end }}.
+Simulated producers: {{ if .Values.simulators.enabled }}ENABLED (synthetic data){{ else }}disabled (expecting real source topics){{ end }}.
+
+Check status:
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl logs deploy/{{ include "recon.fullname" . }}-ingestion

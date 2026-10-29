@@ -173,6 +173,7 @@ def test_register_all_enforces_backward_compatibility():
 
 def test_avro_requires_a_registry_url(monkeypatch):
     monkeypatch.setenv("EVENT_SERIALIZATION", "avro")
+    monkeypatch.delenv("SCHEMA_REGISTRY_URL", raising=False)
     with pytest.raises(ConfigurationError, match="SCHEMA_REGISTRY_URL"):
         load(SchemaRegistrySettings)
     assert load(SchemaRegistrySettings, url="http://registry:8081").serialization == "avro"

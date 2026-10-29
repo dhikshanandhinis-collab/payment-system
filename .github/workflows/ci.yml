@@ -29,6 +29,13 @@ jobs:
         run: mypy common generators ingestion processing database batch observability admin scripts
       - name: Unit tests
         run: pytest tests/unit -q
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Helm chart lint and render
+        run: |
+          helm lint deploy/helm/payment-recon --strict
+          helm template ci deploy/helm/payment-recon --set simulators.enabled=true --set serviceMonitor.enabled=true > /dev/null
 
   integration:
     needs: lint-and-unit
@@ -73,6 +80,27 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose --profile test --profile avro down -v
+
+  # The image the Helm chart deploys: ghcr.io/<owner>/payment-system:<sha> (and :latest), only after tests pass.
+  publish-image:
+    needs: integration
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -t "$image:$GITHUB_SHA" -t "$image:latest" .
+          docker push "$image:$GITHUB_SHA"
+          docker push "$image:latest"
+          echo "Image: $image:$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     needs: integration

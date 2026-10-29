@@ -1,0 +1,57 @@
+{{- if .Values.retention.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "recon.fullname" . }}-retention
+  labels:
+    {{- include "recon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: retention
+spec:
+  schedule: {{ .Values.retention.schedule | quote }}
+  timeZone: {{ .Values.businessTimezone | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            {{- include "recon.selector" (dict "root" . "component" "retention") | nindent 12 }}
+        spec:
+          {{- include "recon.podSpecCommon" . | nindent 10 }}
+          restartPolicy: Never
+          containers:
+            - name: retention
+              image: {{ include "recon.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["python", "-m", "batch.retention"]
+              envFrom:
+                {{- include "recon.envFrom" . | nindent 16 }}
+              env:
+                {{- include "recon.env" (dict "root" . "admin" true "name" "retention") | nindent 16 }}
+                - name: METRICS_ENABLED
+                  value: "false"
+                - name: RETENTION_ARCHIVE_DIR
+                  value: /data/archive
+                - name: RETENTION_BRONZE_PAYLOAD_DAYS
+                  value: {{ .Values.retention.bronzePayloadDays | quote }}
+                - name: RETENTION_OUTBOX_DAYS
+                  value: {{ .Values.retention.outboxDays | quote }}
+                - name: RETENTION_HISTORY_MONTHS
+                  value: {{ .Values.retention.historyMonths | quote }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 512Mi}}
+              volumeMounts:
+                {{- include "recon.secretMounts" . | nindent 16 }}
+                - name: archive
+                  mountPath: /data/archive
+          volumes:
+            {{- include "recon.secretVolumes" (dict "root" . "admin" true) | nindent 12 }}
+            - name: archive
+              persistentVolumeClaim:
+                claimName: {{ .Values.retention.archiveClaim }}
+{{- end }}

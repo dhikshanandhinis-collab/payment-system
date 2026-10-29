@@ -194,6 +194,27 @@ integration/end-to-end/recovery suite in Docker, then - on `main`, when the repo
 Restore a backup: `docker compose exec -T postgres pg_restore -U postgres -d recon --clean < backups/<file>.dump`
 (test this once; a backup that was never restored is not a backup). Copy dumps off the VM periodically.
 
+### 4.2 Integration readiness (connecting to real source systems)
+
+The simulators remain the data source in this repository. Everything a real integration needs is
+implemented behind configuration, so pointing at real systems is a configuration change rather than
+a code change. It still needs real endpoints, credentials, agreed schemas and approvals.
+
+| Area | What is implemented | Configuration |
+|---|---|---|
+| Secure transport and secrets | Kafka SASL_SSL (SCRAM or OAUTHBEARER) and mTLS; PostgreSQL `verify-full` with client certificates; every password can be supplied as `<NAME>_FILE`; `REQUIRE_SECURE_TRANSPORT=true` refuses to start on plaintext or unverified TLS | `KAFKA_*`, `DB_SSL*`, `.env.example` |
+| Ingestion throughput | Set-based bulk writes per poll batch (one `executemany` per table), falling back to per-record processing on a dedup race | `INGESTION_BULK_WRITES` |
+| Settlement files | Fourth source. Processor settlement files with header and TRAILER (count and total) checks are parsed from an inbox, published to Kafka and reconciled against captures, refunds and chargebacks: `SETTLED`, `UNSETTLED`, `SETTLEMENT_MISMATCH` | `SETTLEMENT_INBOX`, rule `settlement` |
+| Chargebacks, fees, holidays | Chargeback and reversal events, ledger postings, net settlement after fees, business-day waiting periods with a holiday calendar | `config/reconciliation_rules.yaml` |
+| Schema registry | Avro over the Confluent wire format; schemas registered with a BACKWARD-compatibility gate before deploy; ingestion accepts JSON and Avro side by side | `EVENT_SERIALIZATION`, `SCHEMA_REGISTRY_*` |
+| Kubernetes | Helm chart: HPA-scaled ingestion and reconciliation, pre-upgrade hook Jobs (migrations, topics, schema gate), file-mounted secrets, non-root read-only pods, NetworkPolicy, PDBs, retention CronJob; image published to GHCR by CI | [deploy/helm/payment-recon](deploy/helm/payment-recon) |
+| Retention | Audit history partitioned by month (expiry drops whole partitions); Bronze payloads archived to hash-verified gzip NDJSON and then blanked, while the row is kept for idempotency; published outbox rows purged | `RETENTION_*`, `python -m batch.retention` |
+
+```bash
+helm upgrade --install recon deploy/helm/payment-recon -n recon \
+  --set image.tag=<git-sha> -f my-values.yaml   # Secret payment-recon-credentials and CA Secret must exist
+```
+
 ## 5. Example event flow
 
 Payment `PAY-local-000000001234`, CAD 125.40, credit card:
@@ -364,7 +385,9 @@ PLAINTEXT, no TLS to PostgreSQL, env-file secrets). See [docs/security.md](docs/
 * Each evaluation reloads the payment's full Silver snapshot - simple and order-independent, but more
   queries per event than incremental state.
 * Admin authorization is an environment allow-list (no SSO/IAM).
-* No automated database retention/purge (Kafka retention only); no schema registry (JSON + Pydantic contracts).
+* Bronze is not partitioned: six Silver tables reference `raw_event_id`, and a partitioned table's unique
+  keys must include the partition column. Old payloads are archived instead; only the audit history is partitioned.
+* The Helm chart is linted and rendered in CI but has not been deployed to a real cluster.
 * Business date of a payment is the initiation date; control totals use each record's own event date,
   so day-boundary timing differences are expected and reported, not reconciled away.
 * Waiting periods are demo values, not real business SLAs.
@@ -372,10 +395,9 @@ PLAINTEXT, no TLS to PostgreSQL, env-file secrets). See [docs/security.md](docs/
 
 ## 15. Future enhancements
 
-Schema registry (Avro/Protobuf) with compatibility checks; Kafka TLS/SASL + ACLs; multi-broker
-cluster; materialized/partitioned Gold tables refreshed by the batch job; Prometheus alert rules;
-CI pipeline (lint, type-check, tests, image scan, SBOM); Bronze archival to object storage; SSO-backed
-admin UI with four-eyes approval; settlement-file reconciliation as a fourth source.
+Protobuf support; multi-broker cluster; materialized Gold tables refreshed by the batch job; image
+scanning and SBOM in CI; SSO-backed admin UI with four-eyes approval; object-storage (S3/Blob) writer
+for the Bronze archive.
 
 ## 16. Repository layout
 

@@ -1,0 +1,47 @@
+{{- $root := . -}}
+{{- $jobs := list -}}
+{{- if .Values.hooks.dbInit -}}{{- $jobs = append $jobs (dict "name" "db-init" "module" "scripts.initialize_database" "admin" true "weight" "-10") -}}{{- end -}}
+{{- if .Values.hooks.kafkaInit -}}{{- $jobs = append $jobs (dict "name" "kafka-init" "module" "scripts.create_topics" "admin" false "weight" "-10") -}}{{- end -}}
+{{- if .Values.hooks.registerSchemas -}}{{- $jobs = append $jobs (dict "name" "register-schemas" "module" "scripts.register_schemas" "admin" false "weight" "-5") -}}{{- end -}}
+{{- range $job := $jobs }}
+---
+# Runs before every install/upgrade; a failure (e.g. an incompatible schema or a tampered migration) stops the rollout.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "recon.fullname" $root }}-{{ $job.name }}
+  labels:
+    {{- include "recon.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $job.name }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: {{ $job.weight | quote }}
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        {{- include "recon.selector" (dict "root" $root "component" $job.name) | nindent 8 }}
+    spec:
+      {{- include "recon.podSpecCommon" $root | nindent 6 }}
+      restartPolicy: Never
+      containers:
+        - name: {{ $job.name }}
+          image: {{ include "recon.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: ["python", "-m", {{ $job.module | quote }}]
+          env:
+            {{- include "recon.configEnv" $root | nindent 12 }}
+            {{- include "recon.env" (dict "root" $root "admin" $job.admin "name" $job.name) | nindent 12 }}
+            - name: METRICS_ENABLED
+              value: "false"
+          securityContext:
+            {{- toYaml $root.Values.securityContext | nindent 12 }}
+          resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 256Mi}}
+          volumeMounts:
+            {{- include "recon.secretMounts" $root | nindent 12 }}
+      volumes:
+        {{- include "recon.secretVolumes" (dict "root" $root "admin" $job.admin) | nindent 8 }}
+{{- end }}

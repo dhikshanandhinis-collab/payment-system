@@ -1,0 +1,43 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default deny for the release's pods; allow only DNS, the managed Kafka/PostgreSQL/registry endpoints, and
+# Prometheus scraping the metrics port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "recon.fullname" . }}
+  labels:
+    {{- include "recon.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.prometheusNamespaceLabel | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 9100}
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- range $cidr := .Values.networkPolicy.kafkaCidrs }}
+    - to: [{ipBlock: {cidr: {{ $cidr }}}}]
+      ports: [{protocol: TCP, port: 9093}]
+    {{- end }}
+    {{- range $cidr := .Values.networkPolicy.postgresCidrs }}
+    - to: [{ipBlock: {cidr: {{ $cidr }}}}]
+      ports: [{protocol: TCP, port: 5432}]
+    {{- end }}
+    {{- range $cidr := .Values.networkPolicy.registryCidrs }}
+    - to: [{ipBlock: {cidr: {{ $cidr }}}}]
+      ports: [{protocol: TCP, port: 8081}]
+    {{- end }}
+{{- end }}
