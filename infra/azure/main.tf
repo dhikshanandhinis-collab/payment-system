@@ -12,6 +12,7 @@ terraform {
 provider "azurerm" {
   features {}
   resource_provider_registrations = "core"
+  resource_providers_to_register  = ["Microsoft.DevTestLab"]
 }
 
 resource "azurerm_resource_group" "main" {
@@ -133,5 +134,19 @@ resource "azurerm_linux_virtual_machine" "app" {
   # custom_data only runs on first boot; editing it must not recreate the server (and its data).
   lifecycle {
     ignore_changes = [custom_data]
+  }
+}
+
+# Safety net for session-based use: shuts the VM down nightly if `infra/vm.ps1 stop` was forgotten.
+resource "azurerm_dev_test_global_vm_shutdown_schedule" "app" {
+  virtual_machine_id    = azurerm_linux_virtual_machine.app.id
+  location              = azurerm_resource_group.main.location
+  enabled               = var.auto_shutdown_time != ""
+  daily_recurrence_time = var.auto_shutdown_time == "" ? "2300" : var.auto_shutdown_time
+  timezone              = var.auto_shutdown_timezone
+  tags                  = local.tags
+
+  notification_settings {
+    enabled = false
   }
 }

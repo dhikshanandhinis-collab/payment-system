@@ -25,6 +25,17 @@ variable "swap_size" {
   default = "4G"
 }
 
+variable "auto_shutdown_time" {
+  type        = string
+  default     = "2300"
+  description = "Daily automatic shutdown (HHmm) in auto_shutdown_timezone; empty string disables it."
+}
+
+variable "auto_shutdown_timezone" {
+  type    = string
+  default = "India Standard Time"
+}
+
 variable "ssh_allowed_source" {
   type        = string
   default     = "*"

@@ -149,6 +149,18 @@ secrets and enables the deploy job. One-time prerequisites: `winget install Micr
 Terraform state (`infra/azure/terraform.tfstate`) contains the SMTP password - it is git-ignored; keep it private.
 To stop all charges: `terraform -chdir=infra/azure destroy` (deletes the VM and its data).
 
+**Session-based operation (saves student credit):** run the VM only when needed. Data persists across
+sessions; while deallocated only the disk and static IP are billed. An Azure auto-shutdown at 23:00 IST
+(`auto_shutdown_time`) catches forgotten sessions, and the CI deploy job skips with a notice while the VM
+is off (the next `start` deploys the latest `main`).
+
+```powershell
+./infra/vm.ps1 start     # start, deploy latest main, wait until healthy
+./infra/vm.ps1 status    # power state, deployed commit, service health
+./infra/vm.ps1 grafana   # tunnel -> http://localhost:3000 and :9090
+./infra/vm.ps1 stop      # clean stop + deallocate
+```
+
 **Manual alternative:**
 
 ```bash

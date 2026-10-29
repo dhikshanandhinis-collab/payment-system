@@ -74,6 +74,10 @@ jobs:
           SSH_USER: ${{ secrets.DEPLOY_USER }}
           SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
+          if ! timeout 15 bash -c "</dev/tcp/$SSH_HOST/22" 2>/dev/null; then
+            echo "::notice::Production VM is stopped; this commit will be deployed by 'infra/vm.ps1 start'."
+            exit 0
+          fi
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
