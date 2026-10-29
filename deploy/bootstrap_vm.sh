@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup of a fresh Ubuntu 22.04/24.04 VM (e.g. Oracle Cloud Always Free, Ampere A1).
+# One-time manual setup of a fresh Ubuntu 22.04/24.04 VM (infra/provision.ps1 automates this on Azure).
 # Usage: bash bootstrap_vm.sh <git-clone-url>
 set -euo pipefail
 repo_url="${1:?usage: bootstrap_vm.sh <git-clone-url>}"

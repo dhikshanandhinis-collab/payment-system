@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  One-command production setup: creates the Oracle Cloud VM (Terraform), which installs and starts the
+  One-command production setup: creates the Azure VM (Terraform), which installs and starts the
   stack on first boot, then configures GitHub so every push to main is tested and deployed automatically.
 
 .EXAMPLE
@@ -14,7 +14,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$tfDir = Join-Path $PSScriptRoot "oracle"
+$tfDir = Join-Path $PSScriptRoot "azure"
 $keyDir = Join-Path $PSScriptRoot ".keys"
 $adminKey = Join-Path $keyDir "admin_ed25519"
 $deployKey = Join-Path $keyDir "deploy_ed25519"
@@ -26,15 +26,19 @@ function Invoke-Native([scriptblock]$Command, [string]$What) {
 }
 
 # ---- Preconditions --------------------------------------------------------------------------------
-foreach ($tool in "terraform", "gh", "ssh", "ssh-keygen", "ssh-keyscan") {
+foreach ($tool in "az", "terraform", "gh", "ssh", "ssh-keygen", "ssh-keyscan") {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-        throw "$tool not found. Install: winget install Hashicorp.Terraform; winget install GitHub.cli"
+        throw "$tool not found. Install: winget install Microsoft.AzureCLI; winget install Hashicorp.Terraform; winget install GitHub.cli"
     }
 }
+$subscription = az account show --query id -o tsv 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $subscription) { throw "Run 'az login' first (your Azure for Students account)." }
+$env:ARM_SUBSCRIPTION_ID = $subscription.Trim()
+Write-Host "Azure subscription: $(az account show --query name -o tsv) ($env:ARM_SUBSCRIPTION_ID)"
 gh auth status *> $null
 if ($LASTEXITCODE -ne 0) { throw "Run 'gh auth login' first, signed in as the owner of $Repo." }
 if (-not (Test-Path (Join-Path $tfDir "terraform.tfvars"))) {
-    throw "Copy infra/oracle/terraform.tfvars.example to infra/oracle/terraform.tfvars and fill it in."
+    throw "Copy infra/azure/terraform.tfvars.example to infra/azure/terraform.tfvars and fill it in."
 }
 
 # ---- SSH keys: one for you (admin), one only for GitHub Actions (deploy) ---------------------------

@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. Azure login itself comes from `az login`.
+location = "centralindia" # change if Azure for Students rejects the region
+
+repo_url = "https://github.com/dhikshanandhinis-collab/payment-system.git"
+
+# Alert e-mail. Gmail: smtp.gmail.com:587 + an App Password (Google account > Security > App passwords), no spaces.
+smtp_smarthost = "smtp.gmail.com:587"
+smtp_from      = "you@gmail.com"
+smtp_username  = "you@gmail.com"
+smtp_password  = "replace-me-app-password"
+alert_email_to = "you@gmail.com"

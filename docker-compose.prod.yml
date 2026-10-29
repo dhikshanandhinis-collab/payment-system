@@ -9,6 +9,14 @@ x-logging: &logging
     max-file: "5"
 
 services:
+  # Sized for a 4 GB VM (Azure Standard_B2s + swap); raise with KAFKA_HEAP_OPTS in .env on bigger hosts.
+  kafka:
+    environment:
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xms256m -Xmx768m}
+
+  postgres:
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_buffers=192MB", "-c", "log_min_duration_statement=2000"]
+
   prometheus:
     command:
       - --config.file=/etc/prometheus/prometheus.yml

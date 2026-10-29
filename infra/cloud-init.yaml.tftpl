@@ -1,11 +1,17 @@
 #cloud-config
-# First boot: install Docker, clone the repo, generate a production .env and start the stack.
+# First boot: swap, Docker, clone the repo, generate a production .env and start the stack.
 package_update: true
 packages:
   - docker.io
   - docker-compose-v2
   - git
   - openssl
+
+# Small VMs (4 GB) need swap headroom for image builds and Kafka.
+swap:
+  filename: /swapfile
+  size: ${swap_size}
+  maxsize: ${swap_size}
 
 write_files:
   - path: /root/payment-smtp.env

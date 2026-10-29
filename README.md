@@ -130,22 +130,24 @@ quarantine handling, disputed cases, rule-version deployment and more.
 
 ### 4.1 Production deployment (single VM)
 
-Target: one Ubuntu 22.04/24.04 VM (e.g. Oracle Cloud Always Free Ampere A1, 4 OCPU / 24 GB). All ports
+Target: one Ubuntu 24.04 VM on **Azure for Students** (default `Standard_B2s`, 2 vCPU / 4 GB + 4 GB swap,
+64 GB Standard SSD; roughly USD 35-45/month of student credit - check the Azure cost view). All ports
 stay bound to `127.0.0.1`; reach Grafana through an SSH tunnel (`ssh -L 3000:localhost:3000 user@vm`).
 
-**Fully automated (recommended):** [infra/provision.ps1](infra/provision.ps1) creates the network and VM
-with Terraform ([infra/oracle/](infra/oracle)), the VM installs Docker and starts the stack on first boot
-(cloud-init + [deploy/init_env.sh](deploy/init_env.sh), random database/Grafana passwords generated on the
+**Fully automated (recommended):** [infra/provision.ps1](infra/provision.ps1) creates the resource group,
+network and VM with Terraform ([infra/azure/](infra/azure)), the VM installs Docker and starts the stack on first boot
+([infra/cloud-init.yaml.tftpl](infra/cloud-init.yaml.tftpl) + [deploy/init_env.sh](deploy/init_env.sh), random database/Grafana passwords generated on the
 VM), and the script stores the deploy SSH key, pinned host key and VM address as GitHub environment
-secrets and enables the deploy job. One-time prerequisites: an Oracle Cloud account with an API key,
-`winget install Hashicorp.Terraform`, `winget install GitHub.cli`, `gh auth login`, and
-`infra/oracle/terraform.tfvars` (copy the `.example`). Then:
+secrets and enables the deploy job. One-time prerequisites: `winget install Microsoft.AzureCLI`,
+`winget install Hashicorp.Terraform`, `winget install GitHub.cli`, `az login`, `gh auth login`, and
+`infra/azure/terraform.tfvars` (copy the `.example`). Then:
 
 ```powershell
 ./infra/provision.ps1
 ```
 
-Terraform state (`infra/oracle/terraform.tfstate`) contains the SMTP password - it is git-ignored; keep it private.
+Terraform state (`infra/azure/terraform.tfstate`) contains the SMTP password - it is git-ignored; keep it private.
+To stop all charges: `terraform -chdir=infra/azure destroy` (deletes the VM and its data).
 
 **Manual alternative:**
 
