@@ -133,6 +133,22 @@ quarantine handling, disputed cases, rule-version deployment and more.
 Target: one Ubuntu 22.04/24.04 VM (e.g. Oracle Cloud Always Free Ampere A1, 4 OCPU / 24 GB). All ports
 stay bound to `127.0.0.1`; reach Grafana through an SSH tunnel (`ssh -L 3000:localhost:3000 user@vm`).
 
+**Fully automated (recommended):** [infra/provision.ps1](infra/provision.ps1) creates the network and VM
+with Terraform ([infra/oracle/](infra/oracle)), the VM installs Docker and starts the stack on first boot
+(cloud-init + [deploy/init_env.sh](deploy/init_env.sh), random database/Grafana passwords generated on the
+VM), and the script stores the deploy SSH key, pinned host key and VM address as GitHub environment
+secrets and enables the deploy job. One-time prerequisites: an Oracle Cloud account with an API key,
+`winget install Hashicorp.Terraform`, `winget install GitHub.cli`, `gh auth login`, and
+`infra/oracle/terraform.tfvars` (copy the `.example`). Then:
+
+```powershell
+./infra/provision.ps1
+```
+
+Terraform state (`infra/oracle/terraform.tfstate`) contains the SMTP password - it is git-ignored; keep it private.
+
+**Manual alternative:**
+
 ```bash
 # On the VM, once
 curl -fsSLO https://raw.githubusercontent.com/<you>/payment-system/main/deploy/bootstrap_vm.sh

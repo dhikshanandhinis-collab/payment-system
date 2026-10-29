@@ -5,6 +5,14 @@
 *.pem
 *.key
 
+# Infrastructure: Terraform state holds secrets; generated SSH keys
+infra/.keys/
+infra/**/.terraform/
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+infra/**/terraform.tfvars
+infra/**/*.tfplan
+
 # Python
 __pycache__/
 *.py[cod]

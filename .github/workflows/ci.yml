@@ -17,8 +17,8 @@ jobs:
   lint-and-unit:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install locked dependencies
@@ -34,13 +34,26 @@ jobs:
     needs: lint-and-unit
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: CI environment file (placeholder secrets only)
         run: cp .env.example .env
+      # The test container runs as uid 10001 and writes coverage into this bind mount.
+      - name: Writable reports directory
+        run: install -d -m 0777 reports
       - name: Build images
         run: docker compose --profile test build
       - name: Integration, end-to-end and recovery tests with coverage
         run: docker compose --profile test run --rm tests
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose --profile test logs --tail 100 kafka postgres kafka-init db-init
+      - name: Coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: reports/htmlcov
+          if-no-files-found: ignore
       - name: Tear down
         if: always()
         run: docker compose --profile test down -v

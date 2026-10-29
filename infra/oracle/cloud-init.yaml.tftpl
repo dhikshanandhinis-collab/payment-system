@@ -1,0 +1,27 @@
+#cloud-config
+# First boot: install Docker, clone the repo, generate a production .env and start the stack.
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - git
+  - openssl
+
+write_files:
+  - path: /root/payment-smtp.env
+    permissions: "0600"
+    content: |
+      SMTP_SMARTHOST=${smtp_smarthost}
+      SMTP_FROM=${smtp_from}
+      SMTP_USERNAME=${smtp_username}
+      SMTP_PASSWORD=${smtp_password}
+      ALERT_EMAIL_TO=${alert_email_to}
+
+runcmd:
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu
+  - sudo -u ubuntu git clone ${repo_url} /home/ubuntu/payment-system
+  - bash /home/ubuntu/payment-system/deploy/init_env.sh /root/payment-smtp.env /home/ubuntu/payment-system/.env
+  - shred -u /root/payment-smtp.env
+  - chown ubuntu:ubuntu /home/ubuntu/payment-system/.env
+  - sudo -u ubuntu sg docker -c "cd /home/ubuntu/payment-system && bash deploy/deploy.sh"
