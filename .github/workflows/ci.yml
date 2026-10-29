@@ -43,11 +43,23 @@ jobs:
       - name: Build images
         run: docker compose --profile test build
       - name: Start schema registry (Avro integration tests)
-        run: docker compose --profile avro up -d --wait schema-registry
+        run: |
+          if ! docker compose --profile avro up -d --wait schema-registry; then
+            docker compose --profile avro logs --tail 30 schema-registry kafka | tail -n 30 | while IFS= read -r line; do
+              echo "::error title=schema-registry::${line:0:300}"; done
+            exit 1
+          fi
       - name: Integration, end-to-end and recovery tests with coverage
         env:
           SCHEMA_REGISTRY_URL: http://schema-registry:8081
-        run: docker compose --profile test run --rm tests
+        run: |
+          set -o pipefail
+          if ! docker compose --profile test run --rm tests 2>&1 | tee pytest.log; then
+            # Annotations are visible without log access: surface the failing tests and their errors.
+            grep -E '^(FAILED|ERROR) |^E  ' pytest.log | head -n 10 | while IFS= read -r line; do
+              echo "::error title=pytest::${line:0:400}"; done
+            exit 1
+          fi
       - name: Service logs on failure
         if: failure()
         run: docker compose --profile test --profile avro logs --tail 100 kafka postgres kafka-init db-init schema-registry

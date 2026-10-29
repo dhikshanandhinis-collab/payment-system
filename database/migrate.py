@@ -157,4 +157,6 @@ def initialize_database(
 
         with conn.transaction():
             register_rule_version(conn, rules)
+        with conn.transaction():
+            conn.execute("SELECT ensure_history_partitions(now(), 3)")
     return applied

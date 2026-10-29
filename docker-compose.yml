@@ -330,6 +330,30 @@ services:
       db-init:
         condition: service_completed_successfully
 
+  # Data retention (archive Bronze payloads, purge outbox, roll history partitions). Run on a schedule:
+  #   docker compose --profile maintenance run --rm retention [--dry-run]
+  retention:
+    <<: *app-image
+    restart: "no"
+    profiles: ["maintenance"]
+    entrypoint: ["python", "-m", "batch.retention"]
+    command: []
+    environment:
+      <<: [*common-env, *db-env]
+      SERVICE_NAME: retention
+      METRICS_ENABLED: "false"
+      DB_MIGRATOR_USER: ${DB_MIGRATOR_USER:-recon_migrator}
+      DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?DB_MIGRATOR_PASSWORD must be set in .env}
+      RETENTION_ARCHIVE_DIR: /data/archive
+      RETENTION_BRONZE_PAYLOAD_DAYS: ${RETENTION_BRONZE_PAYLOAD_DAYS:-90}
+      RETENTION_OUTBOX_DAYS: ${RETENTION_OUTBOX_DAYS:-30}
+      RETENTION_HISTORY_MONTHS: ${RETENTION_HISTORY_MONTHS:-84}
+    volumes:
+      - archive-data:/data/archive
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+
   # One-off commands: docker compose run --rm tools python -m <module> ...
   tools:
     <<: *app-image
@@ -400,5 +424,6 @@ volumes:
   kafka-data:
   postgres-data:
   settlement-files:
+  archive-data:
   prometheus-data:
   grafana-data:

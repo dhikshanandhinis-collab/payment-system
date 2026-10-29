@@ -99,6 +99,14 @@ jobs:
           docker compose run --rm tools python -m batch.daily_reconciliation \
             --business-date "$(TZ=America/Toronto date +%F)" --triggered-by github-actions:production-run
 
+      # Reported only (dry run): this runner has no durable archive storage. db-init already keeps history
+      # partitions created ahead.
+      - name: Retention check
+        run: |
+          docker compose --profile maintenance run --rm retention --dry-run | tee retention.json
+          echo "### Retention (dry run)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"; cat retention.json >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run report
         if: always()
         run: |

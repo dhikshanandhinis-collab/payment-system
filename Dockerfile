@@ -26,7 +26,7 @@ COPY observability/metrics.py observability/__init__.py observability/
 COPY admin/ admin/
 COPY scripts/ scripts/
 # Named volumes mounted here inherit this ownership, so the non-root services can write settlement files.
-RUN mkdir -p /data/settlement/inbox && chown -R app:app /data
+RUN mkdir -p /data/settlement/inbox /data/archive && chown -R app:app /data
 USER app
 EXPOSE 9100
 CMD ["python", "-m", "ingestion.consumer"]
