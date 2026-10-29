@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:bell-recon:schemas:processor_transaction:1.0",
+  "title": "External payment processor transaction event (synthetic)",
+  "description": "Published to processor.transaction.events. Kafka key = payment_id (refunds and reversals carry the original payment_id, so all events of a payment share a partition). Amount is a positive magnitude; direction is implied by event_type. AUTHORIZATION is not a financial capture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "event_type", "schema_version", "source_system", "event_time", "correlation_id",
+               "processor_transaction_id", "payment_id", "amount", "currency", "processor_status"],
+  "properties": {
+    "event_id": {"$ref": "#/$defs/identifier"},
+    "event_type": {"enum": ["AUTHORIZATION", "CAPTURE", "DECLINE", "REVERSAL", "REFUND"]},
+    "schema_version": {"const": "1.0"},
+    "source_system": {"const": "payment_processor"},
+    "event_time": {"type": "string", "format": "date-time"},
+    "correlation_id": {"$ref": "#/$defs/identifier"},
+    "processor_transaction_id": {"$ref": "#/$defs/identifier", "description": "Unique per financial transaction (auth, capture, refund, reversal each have their own id). Re-sends of the same transaction reuse it."},
+    "payment_id": {"$ref": "#/$defs/identifier"},
+    "original_processor_transaction_id": {"$ref": "#/$defs/identifier", "description": "CAPTURE -> its AUTHORIZATION (optional); REFUND/REVERSAL -> the CAPTURE being refunded/reversed (required)."},
+    "amount": {"$ref": "#/$defs/amount"},
+    "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "processor_status": {"enum": ["AUTHORIZED", "CAPTURED", "DECLINED", "REVERSED", "REFUNDED"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"event_type": {"const": "AUTHORIZATION"}}}, "then": {"properties": {"processor_status": {"const": "AUTHORIZED"}}, "not": {"required": ["original_processor_transaction_id"]}}},
+    {"if": {"properties": {"event_type": {"const": "CAPTURE"}}}, "then": {"properties": {"processor_status": {"const": "CAPTURED"}}}},
+    {"if": {"properties": {"event_type": {"const": "DECLINE"}}}, "then": {"properties": {"processor_status": {"const": "DECLINED"}}, "not": {"required": ["original_processor_transaction_id"]}}},
+    {"if": {"properties": {"event_type": {"const": "REVERSAL"}}}, "then": {"properties": {"processor_status": {"const": "REVERSED"}}, "required": ["original_processor_transaction_id"]}},
+    {"if": {"properties": {"event_type": {"const": "REFUND"}}}, "then": {"properties": {"processor_status": {"const": "REFUNDED"}}, "required": ["original_processor_transaction_id"]}}
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"},
+    "amount": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,2})?$", "not": {"pattern": "^0(\\.0{1,2})?$"}}
+  }
+}

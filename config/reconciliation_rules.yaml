@@ -1,0 +1,41 @@
+# Reconciliation rules (versioned).
+#
+# Any change to matching behaviour or waiting periods MUST bump rule_version. The service refuses to
+# start if the same rule_version is already registered in the database with a different content hash.
+#
+# Waiting periods are SYNTHETIC engineering defaults chosen so that the local demo surfaces exceptions
+# within minutes. They are NOT Bell service-level agreements; production values must come from the
+# business owners of each payment channel.
+rule_version: "2026.10.1"
+description: "Initial rule set: shared payment_id matching, exact decimal comparison, per-method waits."
+
+grace_periods_seconds:
+  application_record: 300          # processor/ledger record seen, waiting for the app record
+  processor_outcome:               # app payment initiated, waiting for capture/decline
+    default: 300
+    CREDIT_CARD: 180
+    DEBIT_CARD: 180
+    ONLINE_BANKING: 600
+    PRE_AUTHORIZED_DEBIT: 900
+  billing_posting:                 # capture seen, waiting for an effective PAYMENT_CREDIT
+    default: 300
+    CREDIT_CARD: 240
+    DEBIT_CARD: 240
+    ONLINE_BANKING: 600
+    PRE_AUTHORIZED_DEBIT: 900
+  refund_posting: 600              # processor refund seen, waiting for REFUND_DEBIT
+  reversal_posting: 600            # processor reversal seen, waiting for ledger REVERSAL
+  orphan_reference: 600            # refund/reversal references an unknown transaction
+
+timestamp_rules:
+  max_future_skew_seconds: 300
+  max_age_days: 400
+
+late_event_threshold_seconds: 60   # ingestion_time - event_time above this counts as a late arrival
+
+data_quality_thresholds:
+  max_quarantine_rate: 0.02              # quarantined raw events / raw events
+  max_duplicate_delivery_rate: 0.05      # duplicate raw deliveries / raw events
+  max_late_event_rate: 0.15              # late raw events / valid raw events
+  max_open_exception_rate: 0.05          # open exception cases / cases for the business date
+  min_source_completeness: 0.95          # payments with a record from the source / payments with an app record

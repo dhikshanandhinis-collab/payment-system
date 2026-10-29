@@ -1,0 +1,8 @@
+# Direct development/test dependencies. Pinned versions live in requirements-dev.lock.
+-r requirements.txt
+pytest>=8.3,<9
+pytest-cov>=6.0,<8
+jsonschema>=4.23,<5
+ruff>=0.8
+mypy>=1.13
+types-PyYAML>=6.0

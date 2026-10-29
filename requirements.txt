@@ -1,0 +1,11 @@
+# Direct runtime dependencies (version ranges). Exact resolved versions are pinned in requirements.lock,
+# which the Docker image installs. Regenerate locks with: scripts/lock_dependencies.ps1 (or .sh).
+confluent-kafka>=2.12,<3
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+pydantic>=2.9,<3
+pydantic-settings>=2.6,<3
+PyYAML>=6.0,<7
+tenacity>=9.0,<10
+prometheus-client>=0.21,<1
+tzdata>=2024.1

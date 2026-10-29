@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: pip install --no-deps -r requirements.lock -r requirements-dev.lock
+      - name: Ruff
+        run: ruff check .
+      - name: Mypy
+        run: mypy common generators ingestion processing database batch observability admin scripts
+      - name: Unit tests
+        run: pytest tests/unit -q
+
+  integration:
+    needs: lint-and-unit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: CI environment file (placeholder secrets only)
+        run: cp .env.example .env
+      - name: Build images
+        run: docker compose --profile test build
+      - name: Integration, end-to-end and recovery tests with coverage
+        run: docker compose --profile test run --rm tests
+      - name: Tear down
+        if: always()
+        run: docker compose --profile test down -v
+
+  deploy:
+    needs: integration
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to VM over SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" "cd ~/payment-system && bash deploy/deploy.sh $GITHUB_SHA"

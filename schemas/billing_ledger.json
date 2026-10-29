@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:bell-recon:schemas:billing_ledger:1.0",
+  "title": "Telecom billing ledger entry event (synthetic)",
+  "description": "Published to billing.ledger.events. event_type is the ledger entry type. Kafka key = payment_id, or account_ref for CHARGE entries (which are not linked to a payment). Amount is a positive magnitude; direction (from the customer account's perspective) is explicit: CREDIT reduces the balance owed, DEBIT increases it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "event_type", "schema_version", "source_system", "event_time", "correlation_id",
+               "ledger_entry_id", "account_ref", "amount", "currency", "direction", "posting_status"],
+  "properties": {
+    "event_id": {"$ref": "#/$defs/identifier"},
+    "event_type": {"enum": ["CHARGE", "PAYMENT_CREDIT", "POSTING_CONFIRMATION", "REFUND_DEBIT", "REVERSAL", "ADJUSTMENT"]},
+    "schema_version": {"const": "1.0"},
+    "source_system": {"const": "billing_ledger"},
+    "event_time": {"type": "string", "format": "date-time"},
+    "correlation_id": {"$ref": "#/$defs/identifier"},
+    "ledger_entry_id": {"$ref": "#/$defs/identifier"},
+    "payment_id": {"$ref": "#/$defs/identifier"},
+    "account_ref": {"$ref": "#/$defs/identifier"},
+    "amount": {"$ref": "#/$defs/amount"},
+    "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "direction": {"enum": ["DEBIT", "CREDIT"]},
+    "posting_status": {"enum": ["PENDING", "POSTED", "REJECTED"]},
+    "original_ledger_entry_id": {"$ref": "#/$defs/identifier", "description": "POSTING_CONFIRMATION/REVERSAL -> the entry being confirmed/reversed."},
+    "processor_reference": {"$ref": "#/$defs/identifier", "description": "REFUND_DEBIT -> processor refund id; REVERSAL -> processor reversal id."},
+    "adjustment_reason": {"type": "string", "minLength": 3, "maxLength": 200}
+  },
+  "allOf": [
+    {"if": {"properties": {"event_type": {"const": "CHARGE"}}}, "then": {"properties": {"direction": {"const": "DEBIT"}}}, "else": {"required": ["payment_id"]}},
+    {"if": {"properties": {"event_type": {"const": "PAYMENT_CREDIT"}}}, "then": {"properties": {"direction": {"const": "CREDIT"}}}},
+    {"if": {"properties": {"event_type": {"const": "REFUND_DEBIT"}}}, "then": {"properties": {"direction": {"const": "DEBIT"}}, "required": ["processor_reference"]}},
+    {"if": {"properties": {"event_type": {"const": "POSTING_CONFIRMATION"}}}, "then": {"properties": {"posting_status": {"const": "POSTED"}}, "required": ["original_ledger_entry_id"]}},
+    {"if": {"properties": {"event_type": {"const": "REVERSAL"}}}, "then": {"required": ["original_ledger_entry_id"]}},
+    {"if": {"properties": {"event_type": {"const": "ADJUSTMENT"}}}, "then": {"required": ["adjustment_reason"]}}
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"},
+    "amount": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,2})?$", "not": {"pattern": "^0(\\.0{1,2})?$"}}
+  }
+}

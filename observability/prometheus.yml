@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: bell-recon
+    static_configs:
+      - targets: ["ingestion:9100"]
+        labels: {service: ingestion}
+      - targets: ["reconciliation:9100"]
+        labels: {service: reconciliation}
+      - targets: ["mybell-producer:9100"]
+        labels: {service: mybell-producer}
+      - targets: ["processor-producer:9100"]
+        labels: {service: processor-producer}
+      - targets: ["billing-producer:9100"]
+        labels: {service: billing-producer}
+      - targets: ["batch-scheduler:9100"]
+        labels: {service: batch-scheduler}

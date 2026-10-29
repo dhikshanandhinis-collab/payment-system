@@ -1,0 +1,89 @@
+groups:
+  - name: availability
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.service }} is down"
+          description: "Prometheus cannot scrape {{ $labels.service }} ({{ $labels.instance }}) for 2 minutes."
+
+      - alert: IngestionStalled
+        expr: sum(rate(recon_simulator_events_produced_total[10m])) > 0 and sum(rate(recon_events_persisted_total[10m])) == 0
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "Events are produced but nothing reaches Bronze"
+          description: "Check ingestion logs and Kafka broker health (docs/operational_runbook.md)."
+
+  - name: pipeline
+    rules:
+      - alert: ConsumerLagHigh
+        expr: sum(recon_consumer_lag_messages) > 5000
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Ingestion consumer lag is {{ $value }} messages"
+
+      - alert: OffsetCommitFailures
+        expr: increase(recon_offset_commits_total{outcome="failed"}[10m]) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Kafka offset commits failing (broker fenced / coordinator moving?)"
+
+      - alert: IngestionBatchFailures
+        expr: increase(recon_ingestion_batch_failures_total[15m]) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} ingestion batches rolled back in 15 minutes"
+
+      - alert: WorkQueueBacklog
+        expr: recon_work_queue_depth > 5000
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Reconciliation work queue depth is {{ $value }}"
+
+      - alert: ReconciliationItemFailures
+        expr: increase(recon_reconciliation_item_failures_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Reconciliation evaluations are failing"
+
+      - alert: OutboxBacklog
+        expr: recon_outbox_backlog > 1000
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} reconciliation events not yet published to Kafka"
+
+      - alert: BatchRunFailed
+        expr: increase(recon_batch_runs_total{outcome="FAILED"}[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "A business-date batch run failed (safe to rerun)"
+
+  - name: host
+    rules:
+      - alert: DiskSpaceLow
+        expr: node_filesystem_avail_bytes{mountpoint="/", fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/", fstype!~"tmpfs|overlay"} < 0.15
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "Root filesystem has less than 15% free"
+
+      - alert: MemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Less than 10% memory available on the host"
+
+      - alert: BackupStale
+        expr: time() - recon_backup_last_success_timestamp_seconds > 93600 or absent(recon_backup_last_success_timestamp_seconds)
+        for: 1h
+        labels: {severity: critical}
+        annotations:
+          summary: "No successful PostgreSQL backup in the last 26 hours"

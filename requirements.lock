@@ -1,0 +1,15 @@
+annotated-types==0.8.0
+confluent-kafka==2.16.1
+prometheus_client==0.26.0
+psycopg==3.3.6
+psycopg-binary==3.3.6
+psycopg-pool==3.3.3
+pydantic==2.14.1
+pydantic-settings==2.16.1
+pydantic_core==2.50.1
+python-dotenv==1.2.4
+PyYAML==6.0.3
+tenacity==9.2.1
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.5

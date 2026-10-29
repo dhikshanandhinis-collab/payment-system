@@ -1,0 +1,333 @@
+# Local development environment for the Bell-inspired payment reconciliation platform.
+# Synthetic data only. Networking/credentials are simplified for local use - see docs/security.md.
+#
+#   docker compose build
+#   docker compose up -d                        # core pipeline
+#   docker compose --profile observability up -d   # + Prometheus/Grafana (optional)
+#   docker compose --profile test run --rm tests   # test suite
+
+name: bell-recon
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-app-image: &app-image
+  image: bell-recon:latest
+  build:
+    context: .
+    target: runtime
+  restart: unless-stopped
+  logging: *logging
+  init: true
+  read_only: true
+  tmpfs: ["/tmp"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+x-common-env: &common-env
+  ENVIRONMENT: ${ENVIRONMENT:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-America/Toronto}
+  METRICS_PORT: "9100"
+
+x-kafka-env: &kafka-env
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+  KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+  TOPIC_PARTITIONS: ${TOPIC_PARTITIONS:-6}
+  TOPIC_REPLICATION_FACTOR: ${TOPIC_REPLICATION_FACTOR:-1}
+  TOPIC_MIN_INSYNC_REPLICAS: ${TOPIC_MIN_INSYNC_REPLICAS:-1}
+  TOPIC_RETENTION_MS: ${TOPIC_RETENTION_MS:-604800000}
+  TOPIC_DLQ_RETENTION_MS: ${TOPIC_DLQ_RETENTION_MS:-2592000000}
+
+x-db-env: &db-env
+  DB_HOST: ${DB_HOST:-postgres}
+  DB_PORT: ${DB_PORT:-5432}
+  DB_NAME: ${DB_NAME:-recon}
+  DB_SCHEMA_NAME: ${DB_SCHEMA_NAME:-recon}
+  DB_SSLMODE: ${DB_SSLMODE:-disable}
+  DB_USER: ${DB_USER:-recon_app}
+  DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+  DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
+  DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-5}
+
+x-retry-env: &retry-env
+  RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-6}
+  RETRY_INITIAL_BACKOFF_S: ${RETRY_INITIAL_BACKOFF_S:-0.5}
+  RETRY_MAX_BACKOFF_S: ${RETRY_MAX_BACKOFF_S:-10}
+
+x-sim-env: &sim-env
+  SIM_SEED: ${SIM_SEED:-20261028}
+  SIM_RUN_ID: ${SIM_RUN_ID:-local}
+  SIM_PAYMENTS_PER_SECOND: ${SIM_PAYMENTS_PER_SECOND:-2}
+  SIM_DECLINE_RATE: ${SIM_DECLINE_RATE:-0.06}
+  SIM_MISSING_PROCESSOR_RATE: ${SIM_MISSING_PROCESSOR_RATE:-0.005}
+  SIM_MISSING_LEDGER_RATE: ${SIM_MISSING_LEDGER_RATE:-0.008}
+  SIM_PROCESSOR_AMOUNT_MISMATCH_RATE: ${SIM_PROCESSOR_AMOUNT_MISMATCH_RATE:-0.004}
+  SIM_LEDGER_AMOUNT_MISMATCH_RATE: ${SIM_LEDGER_AMOUNT_MISMATCH_RATE:-0.004}
+  SIM_DUPLICATE_DELIVERY_RATE: ${SIM_DUPLICATE_DELIVERY_RATE:-0.02}
+  SIM_DELAYED_EVENT_RATE: ${SIM_DELAYED_EVENT_RATE:-0.05}
+  SIM_INVALID_PAYLOAD_RATE: ${SIM_INVALID_PAYLOAD_RATE:-0.003}
+  SIM_REFUND_RATE: ${SIM_REFUND_RATE:-0.03}
+  SIM_REVERSAL_RATE: ${SIM_REVERSAL_RATE:-0.01}
+  SIM_INTERRUPTION_PROBABILITY_PER_MINUTE: ${SIM_INTERRUPTION_PROBABILITY_PER_MINUTE:-0.02}
+
+x-app-healthcheck: &app-healthcheck
+  test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9100/readyz', timeout=3).status == 200 else 1)"]
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
+
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      CLUSTER_ID: bXlCZWxsUmVjb25Mb2NhbA
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Single-broker local cluster: internal topics cannot be replicated. Production uses RF=3.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 6
+      # Combined broker+controller on a shared laptop: with the default 9s broker session the broker's
+      # heartbeat to its own controller timed out under CPU starvation, the broker was fenced and every
+      # __consumer_offsets partition lost its leader (consumer group coordinator churn). See failure_recovery.md.
+      KAFKA_BROKER_SESSION_TIMEOUT_MS: 30000
+      KAFKA_BROKER_HEARTBEAT_INTERVAL_MS: 3000
+      # Fewer offsets partitions = cheaper coordinator (re)loads locally. Only applies to a fresh kafka-data volume.
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: 6
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
+    ports:
+      - "127.0.0.1:9094:9094"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # A TCP probe instead of kafka-broker-api-versions.sh: the latter starts a JVM every interval,
+      # which measurably added CPU pressure. Topic readiness is verified separately by kafka-init.
+      test: ["CMD-SHELL", "nc -z localhost 9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: ${DB_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${DB_SUPERUSER_PASSWORD:?DB_SUPERUSER_PASSWORD must be set in .env}
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB", "-c", "log_min_duration_statement=2000"]
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka-init:
+    <<: *app-image
+    restart: "no"
+    command: ["python", "-m", "scripts.create_topics"]
+    environment:
+      <<: [*common-env, *kafka-env, *retry-env]
+      METRICS_ENABLED: "false"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  db-init:
+    <<: *app-image
+    restart: "no"
+    command: ["python", "-m", "scripts.initialize_database"]
+    environment:
+      <<: [*common-env, *db-env, *retry-env]
+      METRICS_ENABLED: "false"
+      DB_SUPERUSER: ${DB_SUPERUSER:-postgres}
+      DB_SUPERUSER_PASSWORD: ${DB_SUPERUSER_PASSWORD:?DB_SUPERUSER_PASSWORD must be set in .env}
+      DB_MIGRATOR_USER: ${DB_MIGRATOR_USER:-recon_migrator}
+      DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?DB_MIGRATOR_PASSWORD must be set in .env}
+      DB_APP_USER: ${DB_APP_USER:-recon_app}
+      DB_REPORTING_USER: ${DB_REPORTING_USER:-recon_reporting}
+      DB_REPORTING_PASSWORD: ${DB_REPORTING_PASSWORD:?DB_REPORTING_PASSWORD must be set in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingestion:
+    <<: *app-image
+    command: ["python", "-m", "ingestion.consumer"]
+    environment:
+      <<: [*common-env, *kafka-env, *db-env, *retry-env]
+      SERVICE_NAME: ingestion
+      INGESTION_CONSUMER_GROUP: ${INGESTION_CONSUMER_GROUP:-recon-ingestion}
+      INGESTION_AUTO_OFFSET_RESET: ${INGESTION_AUTO_OFFSET_RESET:-earliest}
+      INGESTION_BATCH_SIZE: ${INGESTION_BATCH_SIZE:-500}
+      INGESTION_POLL_TIMEOUT_S: ${INGESTION_POLL_TIMEOUT_S:-1.0}
+    ports: ["127.0.0.1:9101:9100"]
+    healthcheck: *app-healthcheck
+    stop_grace_period: 30s
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      db-init:
+        condition: service_completed_successfully
+
+  reconciliation:
+    <<: *app-image
+    command: ["python", "-m", "processing.reconciliation_service"]
+    environment:
+      <<: [*common-env, *kafka-env, *db-env, *retry-env]
+      SERVICE_NAME: reconciliation
+      RECON_WORKER_BATCH_SIZE: ${RECON_WORKER_BATCH_SIZE:-100}
+      RECON_SWEEP_INTERVAL_S: ${RECON_SWEEP_INTERVAL_S:-10}
+    ports: ["127.0.0.1:9102:9100"]
+    healthcheck: *app-healthcheck
+    stop_grace_period: 30s
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      db-init:
+        condition: service_completed_successfully
+
+  mybell-producer:
+    <<: *app-image
+    command: ["python", "-m", "generators.mybell_producer"]
+    environment:
+      <<: [*common-env, *kafka-env, *sim-env]
+      SERVICE_NAME: mybell-producer
+    ports: ["127.0.0.1:9103:9100"]
+    healthcheck: *app-healthcheck
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  processor-producer:
+    <<: *app-image
+    command: ["python", "-m", "generators.processor_producer"]
+    environment:
+      <<: [*common-env, *kafka-env, *sim-env]
+      SERVICE_NAME: processor-producer
+    ports: ["127.0.0.1:9104:9100"]
+    healthcheck: *app-healthcheck
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  billing-producer:
+    <<: *app-image
+    command: ["python", "-m", "generators.billing_producer"]
+    environment:
+      <<: [*common-env, *kafka-env, *sim-env]
+      SERVICE_NAME: billing-producer
+    ports: ["127.0.0.1:9105:9100"]
+    healthcheck: *app-healthcheck
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  batch-scheduler:
+    <<: *app-image
+    command: ["python", "-m", "batch.scheduler"]
+    environment:
+      <<: [*common-env, *db-env]
+      SERVICE_NAME: batch-scheduler
+      BATCH_DAILY_RUN_TIME: ${BATCH_DAILY_RUN_TIME:-00:30}
+      BATCH_INTRADAY_INTERVAL_S: ${BATCH_INTRADAY_INTERVAL_S:-900}
+    ports: ["127.0.0.1:9106:9100"]
+    healthcheck: *app-healthcheck
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+
+  # One-off commands: docker compose run --rm tools python -m <module> ...
+  tools:
+    <<: *app-image
+    restart: "no"
+    profiles: ["tools"]
+    command: ["python", "-m", "scripts.report", "--list"]
+    environment:
+      <<: [*common-env, *kafka-env, *db-env, *sim-env, *retry-env]
+      METRICS_ENABLED: "false"
+      ADMIN_ALLOWED_ACTORS: ${ADMIN_ALLOWED_ACTORS:-}
+    volumes:
+      - ./load_test_results:/app/load_test_results
+
+  tests:
+    image: bell-recon-test:latest
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    restart: "no"
+    init: true
+    environment:
+      <<: [*common-env, *kafka-env, *db-env, *retry-env]
+      METRICS_ENABLED: "false"
+      RECON_INTEGRATION: "1"
+      COVERAGE_FILE: /app/reports/.coverage
+      DB_SUPERUSER: ${DB_SUPERUSER:-postgres}
+      DB_SUPERUSER_PASSWORD: ${DB_SUPERUSER_PASSWORD:?DB_SUPERUSER_PASSWORD must be set in .env}
+      DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?DB_MIGRATOR_PASSWORD must be set in .env}
+      DB_REPORTING_PASSWORD: ${DB_REPORTING_PASSWORD:?DB_REPORTING_PASSWORD must be set in .env}
+    command: ["pytest", "--cov", "--cov-report=term", "--cov-report=html:/app/reports/htmlcov", "-q"]
+    volumes:
+      - ./reports:/app/reports
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      db-init:
+        condition: service_completed_successfully
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *logging
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+
+  grafana:
+    image: grafana/grafana-oss:12.1.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  kafka-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:

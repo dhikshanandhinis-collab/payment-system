@@ -1,0 +1,83 @@
+# Production overrides for a single-VM deployment (see deploy/deploy.sh):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile observability up -d
+# Adds alerting (Prometheus rules -> Alertmanager -> email), host metrics and nightly PostgreSQL backups.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  prometheus:
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./observability/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      SMTP_SMARTHOST: ${SMTP_SMARTHOST:?SMTP_SMARTHOST must be set in .env}
+      SMTP_FROM: ${SMTP_FROM:?SMTP_FROM must be set in .env}
+      SMTP_USERNAME: ${SMTP_USERNAME:?SMTP_USERNAME must be set in .env}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?SMTP_PASSWORD must be set in .env}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:?ALERT_EMAIL_TO must be set in .env}
+    # Alertmanager does not expand env vars, so the config is rendered at start; the password goes to a file.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        umask 077
+        printf '%s' "$$SMTP_PASSWORD" > /tmp/smtp_password
+        sed -e "s|__SMTP_SMARTHOST__|$$SMTP_SMARTHOST|" -e "s|__SMTP_FROM__|$$SMTP_FROM|" \
+            -e "s|__SMTP_USERNAME__|$$SMTP_USERNAME|" -e "s|__ALERT_EMAIL_TO__|$$ALERT_EMAIL_TO|" \
+            /etc/alertmanager/alertmanager.tmpl.yml > /tmp/alertmanager.yml
+        exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager
+    tmpfs: ["/tmp"]
+    volumes:
+      - ./observability/alertmanager.tmpl.yml:/etc/alertmanager/alertmanager.tmpl.yml:ro
+      - alertmanager-data:/alertmanager
+    ports: ["127.0.0.1:9093:9093"]
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *logging
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    volumes:
+      - /:/host:ro,rslave
+      - backup-metrics:/textfile:ro
+
+  postgres-backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    entrypoint: ["/bin/sh", "/backup_loop.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: ${DB_SUPERUSER:-postgres}
+      PGPASSWORD: ${DB_SUPERUSER_PASSWORD:?DB_SUPERUSER_PASSWORD must be set in .env}
+      PGDATABASE: ${DB_NAME:-recon}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+      BACKUP_INTERVAL_S: ${BACKUP_INTERVAL_S:-86400}
+    volumes:
+      - ./deploy/backup_loop.sh:/backup_loop.sh:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+      - backup-metrics:/textfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  alertmanager-data:
+  backup-metrics:

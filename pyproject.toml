@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bell-payment-reconciliation"
+version = "1.0.0"
+description = "Bell-inspired real-time telecom payment reconciliation platform (synthetic data only; not affiliated with Bell)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "confluent-kafka>=2.12,<3",
+    "psycopg[binary]>=3.2,<4",
+    "psycopg-pool>=3.2,<4",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "PyYAML>=6.0,<7",
+    "tenacity>=9.0,<10",
+    "prometheus-client>=0.21,<1",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-cov>=6.0,<8",
+    "jsonschema>=4.23,<5",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-PyYAML>=6.0",
+]
+
+[tool.setuptools]
+packages = [
+    "common",
+    "generators",
+    "ingestion",
+    "processing",
+    "database",
+    "batch",
+    "observability",
+    "admin",
+    "scripts",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "integration: requires running PostgreSQL and Kafka (see README)",
+    "e2e: end-to-end scenarios through Kafka and PostgreSQL",
+    "recovery: failure-injection and recovery tests",
+]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["common", "generators", "ingestion", "processing", "database", "batch", "observability", "admin"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "DTZ"]
+ignore = ["S101", "S311", "S608"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "DTZ", "E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true

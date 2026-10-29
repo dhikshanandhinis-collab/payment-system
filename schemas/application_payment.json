@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:bell-recon:schemas:application_payment:1.0",
+  "title": "MyBell-style application payment event (synthetic)",
+  "description": "Published by the application payment simulator to mybell.payment.events. Kafka key = payment_id. Amount is a positive magnitude encoded as a decimal string with at most 2 decimal places.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "event_type", "schema_version", "source_system", "event_time", "correlation_id",
+               "payment_id", "account_ref", "amount", "currency", "payment_method", "source_status"],
+  "properties": {
+    "event_id": {"$ref": "#/$defs/identifier", "description": "Unique per emitted event; re-deliveries reuse it."},
+    "event_type": {"enum": ["PAYMENT_INITIATED", "PAYMENT_SUCCEEDED", "PAYMENT_FAILED", "PAYMENT_TIMEOUT", "PAYMENT_STATUS_UPDATED"]},
+    "schema_version": {"const": "1.0"},
+    "source_system": {"const": "mybell_app"},
+    "event_time": {"type": "string", "format": "date-time", "description": "ISO 8601 with UTC offset."},
+    "correlation_id": {"$ref": "#/$defs/identifier"},
+    "payment_id": {"$ref": "#/$defs/identifier", "description": "Shared payment reference used for matching."},
+    "account_ref": {"$ref": "#/$defs/identifier", "description": "Synthetic customer account reference."},
+    "amount": {"$ref": "#/$defs/amount"},
+    "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "payment_method": {"enum": ["CREDIT_CARD", "DEBIT_CARD", "PRE_AUTHORIZED_DEBIT", "ONLINE_BANKING"]},
+    "source_status": {"enum": ["INITIATED", "SUCCEEDED", "FAILED", "UNKNOWN"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"event_type": {"const": "PAYMENT_INITIATED"}}}, "then": {"properties": {"source_status": {"const": "INITIATED"}}}},
+    {"if": {"properties": {"event_type": {"const": "PAYMENT_SUCCEEDED"}}}, "then": {"properties": {"source_status": {"const": "SUCCEEDED"}}}},
+    {"if": {"properties": {"event_type": {"const": "PAYMENT_FAILED"}}}, "then": {"properties": {"source_status": {"const": "FAILED"}}}},
+    {"if": {"properties": {"event_type": {"const": "PAYMENT_TIMEOUT"}}}, "then": {"properties": {"source_status": {"const": "UNKNOWN"}}}},
+    {"if": {"properties": {"event_type": {"const": "PAYMENT_STATUS_UPDATED"}}}, "then": {"properties": {"source_status": {"enum": ["SUCCEEDED", "FAILED", "UNKNOWN"]}}}}
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]*$"},
+    "amount": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,2})?$", "not": {"pattern": "^0(\\.0{1,2})?$"}}
+  }
+}

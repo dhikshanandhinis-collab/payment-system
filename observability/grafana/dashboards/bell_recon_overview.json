@@ -1,0 +1,72 @@
+{
+  "uid": "bell-recon-overview",
+  "title": "Bell-inspired Payment Reconciliation - Overview",
+  "tags": ["bell-recon", "synthetic"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Events consumed / persisted (per second)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (topic) (rate(recon_events_consumed_total[1m]))", "legendFormat": "consumed {{topic}}"},
+        {"refId": "B", "expr": "sum by (source_system) (rate(recon_events_persisted_total[1m]))", "legendFormat": "persisted {{source_system}}"}
+      ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Consumer lag (messages)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (topic) (recon_consumer_lag_messages)", "legendFormat": "{{topic}}"}]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Rejected / quarantined / duplicates (per minute)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (error_code) (increase(recon_events_rejected_total[1m]))", "legendFormat": "rejected {{error_code}}"},
+        {"refId": "B", "expr": "sum by (kind) (increase(recon_duplicates_detected_total[1m]))", "legendFormat": "duplicate {{kind}}"}
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Case transitions by new status (per minute)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (new_status) (increase(recon_case_transitions_total[1m]))", "legendFormat": "{{new_status}}"}]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Latency p95 (seconds)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(recon_consumer_batch_processing_seconds_bucket[5m])))", "legendFormat": "consumer batch"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le, component) (rate(recon_db_write_seconds_bucket[5m])))", "legendFormat": "db write {{component}}"},
+        {"refId": "C", "expr": "histogram_quantile(0.95, sum by (le) (rate(recon_work_queue_wait_seconds_bucket[5m])))", "legendFormat": "recon queue wait"}
+      ]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Work queue depth / outbox backlog",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max(recon_work_queue_depth)", "legendFormat": "queue"},
+        {"refId": "B", "expr": "max(recon_outbox_backlog)", "legendFormat": "outbox"}
+      ]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Retries / DLQ / batch failures (1h)",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum(increase(recon_retries_total[1h]))", "legendFormat": "retries"},
+        {"refId": "B", "expr": "sum(increase(recon_dlq_published_total[1h]))", "legendFormat": "dlq"},
+        {"refId": "C", "expr": "sum(increase(recon_ingestion_batch_failures_total[1h]))", "legendFormat": "batch failures"},
+        {"refId": "D", "expr": "sum(increase(recon_batch_runs_total{outcome=\"FAILED\"}[1h]))", "legendFormat": "failed batch runs"}
+      ]
+    }
+  ]
+}
