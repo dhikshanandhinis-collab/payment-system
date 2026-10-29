@@ -48,7 +48,9 @@ $emptyPassphrase = if ($PSVersionTable.PSVersion -ge [version]"7.3") { "" } else
 foreach ($key in $adminKey, $deployKey) {
     if (-not (Test-Path $key)) {
         Invoke-Native { ssh-keygen -q -t ed25519 -N $emptyPassphrase -C (Split-Path $key -Leaf) -f $key } "ssh-keygen"
-        icacls $key /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+        if ($PSVersionTable.PSEdition -eq "Desktop" -or $IsWindows) {
+            icacls $key /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+        }
     }
 }
 

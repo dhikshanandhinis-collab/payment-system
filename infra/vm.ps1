@@ -38,10 +38,17 @@ function Invoke-Vm([string]$Command, [string[]]$Extra = @()) {
     ssh @sshArgs
 }
 
+function Test-Port([string]$HostName, [int]$Port) {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try { return $client.ConnectAsync($HostName, $Port).Wait(5000) -and $client.Connected }
+    catch { return $false }
+    finally { $client.Dispose() }
+}
+
 function Wait-Ssh {
     $ip = Get-VmIp
     for ($i = 0; $i -lt 30; $i++) {
-        if ((Test-NetConnection $ip -Port 22 -WarningAction SilentlyContinue).TcpTestSucceeded) { return }
+        if (Test-Port $ip 22) { return }
         Start-Sleep -Seconds 10
     }
     throw "SSH on $ip not reachable after 5 minutes."
