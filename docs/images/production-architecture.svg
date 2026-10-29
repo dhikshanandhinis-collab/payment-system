@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="680" viewBox="0 0 1280 680" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .col { font-size: 13px; font-weight: 600; fill: #64748b; letter-spacing: 0.06em; }
+      .t { font-size: 15px; font-weight: 600; fill: #0f172a; }
+      .s { font-size: 12px; fill: #475569; }
+      .lbl { font-size: 11.5px; fill: #334155; }
+      .edge { stroke: #475569; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .dash { stroke-dasharray: 5 4; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="680" fill="#ffffff"/>
+  <text x="640" y="38" text-anchor="middle" font-size="22" font-weight="700" fill="#0f172a">Payment Reconciliation Platform - Production Architecture</text>
+  <text x="640" y="60" text-anchor="middle" class="s">Independent project with synthetic data; not affiliated with Bell</text>
+
+  <!-- Column headings -->
+  <text x="130" y="95" text-anchor="middle" class="col">SOURCE SYSTEMS</text>
+  <text x="390" y="95" text-anchor="middle" class="col">EVENT STREAMING</text>
+  <text x="715" y="95" text-anchor="middle" class="col">RECONCILIATION PLATFORM</text>
+  <text x="1015" y="95" text-anchor="middle" class="col">DATA</text>
+  <text x="1190" y="95" text-anchor="middle" class="col">CONSUMERS</text>
+
+  <!-- Sources -->
+  <g>
+    <rect x="30" y="110" width="200" height="64" rx="10" fill="#eff6ff" stroke="#3b82f6"/>
+    <text x="130" y="137" text-anchor="middle" class="t">Customer app</text>
+    <text x="130" y="157" text-anchor="middle" class="s">payment requests</text>
+
+    <rect x="30" y="190" width="200" height="64" rx="10" fill="#eff6ff" stroke="#3b82f6"/>
+    <text x="130" y="217" text-anchor="middle" class="t">Payment processor</text>
+    <text x="130" y="237" text-anchor="middle" class="s">captures, refunds, chargebacks</text>
+
+    <rect x="30" y="270" width="200" height="64" rx="10" fill="#eff6ff" stroke="#3b82f6"/>
+    <text x="130" y="297" text-anchor="middle" class="t">Billing ledger</text>
+    <text x="130" y="317" text-anchor="middle" class="s">account postings</text>
+
+    <rect x="30" y="350" width="200" height="64" rx="10" fill="#eff6ff" stroke="#3b82f6"/>
+    <text x="130" y="377" text-anchor="middle" class="t">Settlement files</text>
+    <text x="130" y="397" text-anchor="middle" class="s">daily, via SFTP</text>
+  </g>
+
+  <!-- Streaming -->
+  <rect x="290" y="110" width="200" height="224" rx="10" fill="#fff7ed" stroke="#f97316"/>
+  <text x="390" y="200" text-anchor="middle" class="t">Apache Kafka</text>
+  <text x="390" y="222" text-anchor="middle" class="s">managed cluster</text>
+  <text x="390" y="240" text-anchor="middle" class="s">TLS + SASL, RF = 3</text>
+
+  <rect x="290" y="350" width="200" height="64" rx="10" fill="#fff7ed" stroke="#f97316"/>
+  <text x="390" y="377" text-anchor="middle" class="t">Schema registry</text>
+  <text x="390" y="397" text-anchor="middle" class="s">Avro contracts</text>
+
+  <!-- Platform (Kubernetes) -->
+  <rect x="550" y="105" width="330" height="390" rx="14" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="715" y="127" text-anchor="middle" class="s" font-weight="600">Kubernetes (Helm)</text>
+
+  <rect x="575" y="140" width="280" height="64" rx="10" fill="#ffffff" stroke="#16a34a"/>
+  <text x="715" y="167" text-anchor="middle" class="t">Ingestion</text>
+  <text x="715" y="187" text-anchor="middle" class="s">validate, deduplicate, store</text>
+
+  <rect x="575" y="222" width="280" height="64" rx="10" fill="#ffffff" stroke="#16a34a"/>
+  <text x="715" y="249" text-anchor="middle" class="t">Reconciliation engine</text>
+  <text x="715" y="269" text-anchor="middle" class="s">match sources, apply rules, manage cases</text>
+
+  <rect x="575" y="304" width="280" height="64" rx="10" fill="#ffffff" stroke="#16a34a"/>
+  <text x="715" y="331" text-anchor="middle" class="t">Batch &amp; reporting</text>
+  <text x="715" y="351" text-anchor="middle" class="s">daily runs, control totals, data quality</text>
+
+  <rect x="575" y="386" width="280" height="64" rx="10" fill="#ffffff" stroke="#16a34a"/>
+  <text x="715" y="413" text-anchor="middle" class="t">Retention</text>
+  <text x="715" y="433" text-anchor="middle" class="s">archive old payloads, expire history</text>
+
+  <!-- Data -->
+  <rect x="940" y="140" width="150" height="146" rx="10" fill="#f5f3ff" stroke="#8b5cf6"/>
+  <text x="1015" y="190" text-anchor="middle" class="t">PostgreSQL</text>
+  <text x="1015" y="212" text-anchor="middle" class="s">raw events</text>
+  <text x="1015" y="230" text-anchor="middle" class="s">clean records</text>
+  <text x="1015" y="248" text-anchor="middle" class="s">cases + audit</text>
+
+  <rect x="940" y="386" width="150" height="64" rx="10" fill="#f5f3ff" stroke="#8b5cf6"/>
+  <text x="1015" y="413" text-anchor="middle" class="t">Archive</text>
+  <text x="1015" y="433" text-anchor="middle" class="s">object storage</text>
+
+  <!-- Consumers -->
+  <rect x="1120" y="140" width="140" height="80" rx="10" fill="#fdf2f8" stroke="#ec4899"/>
+  <text x="1190" y="172" text-anchor="middle" class="t">Finance &amp; Ops</text>
+  <text x="1190" y="192" text-anchor="middle" class="s">reports,</text>
+  <text x="1190" y="208" text-anchor="middle" class="s">exceptions</text>
+
+  <rect x="1120" y="304" width="140" height="80" rx="10" fill="#fdf2f8" stroke="#ec4899"/>
+  <text x="1190" y="336" text-anchor="middle" class="t">Downstream</text>
+  <text x="1190" y="356" text-anchor="middle" class="s">systems</text>
+
+  <!-- Edges: sources to Kafka -->
+  <path class="edge" d="M230,142 L290,160"/>
+  <path class="edge" d="M230,222 L290,210"/>
+  <path class="edge" d="M230,302 L290,262"/>
+  <path class="edge" d="M230,382 C262,382 262,312 290,312"/>
+
+  <!-- Kafka to platform -->
+  <path class="edge" d="M490,172 L575,172"/>
+  <text x="532" y="164" text-anchor="middle" class="lbl">events</text>
+  <path class="edge dash" d="M490,382 C530,382 530,196 575,190"/>
+  <text x="520" y="300" text-anchor="middle" class="lbl" transform="rotate(-90 520 300)">schemas</text>
+
+  <!-- Platform to data -->
+  <path class="edge" d="M880,213 L940,213" marker-start="url(#arrow)"/>
+  <text x="910" y="205" text-anchor="middle" class="lbl">read/write</text>
+  <path class="edge" d="M855,418 L940,418"/>
+
+  <!-- Outputs -->
+  <path class="edge" d="M1090,180 L1120,180"/>
+  <path class="edge" d="M880,472 L1190,472 L1190,384"/>
+  <text x="1035" y="490" text-anchor="middle" class="lbl">case updates (Kafka)</text>
+
+  <!-- Cross-cutting band -->
+  <text x="640" y="532" text-anchor="middle" class="col">CROSS-CUTTING</text>
+  <rect x="30" y="548" width="390" height="100" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="225" y="580" text-anchor="middle" class="t">CI/CD</text>
+  <text x="225" y="602" text-anchor="middle" class="s">GitHub Actions: lint, tests, integration suite</text>
+  <text x="225" y="620" text-anchor="middle" class="s">image to GHCR, Helm upgrade with schema/migration gates</text>
+
+  <rect x="445" y="548" width="390" height="100" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="640" y="580" text-anchor="middle" class="t">Security</text>
+  <text x="640" y="602" text-anchor="middle" class="s">TLS everywhere, secrets manager, least-privilege DB roles</text>
+  <text x="640" y="620" text-anchor="middle" class="s">append-only audit, network policies, non-root pods</text>
+
+  <rect x="860" y="548" width="400" height="100" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="1060" y="580" text-anchor="middle" class="t">Observability</text>
+  <text x="1060" y="602" text-anchor="middle" class="s">Prometheus metrics, Grafana dashboards</text>
+  <text x="1060" y="620" text-anchor="middle" class="s">Alertmanager to on-call, JSON logs</text>
+</svg>

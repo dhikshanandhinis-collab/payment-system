@@ -5,6 +5,8 @@
 > synthetic data. This guide describes how the platform runs today and what connecting it to real
 > source systems involves.
 
+![Production architecture](images/production-architecture.svg)
+
 ## 1. Status
 
 | Area | State |

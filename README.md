@@ -48,6 +48,8 @@ disagree. The platform:
 
 ## 2. Architecture
 
+![Production architecture](docs/images/production-architecture.svg)
+
 ```mermaid
 flowchart LR
     A[MyBell-style app simulator] --> T1[(mybell.payment.events)]
