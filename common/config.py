@@ -6,6 +6,8 @@ prevent a producer from starting, but does stop the ingestion service with a cle
 
 from __future__ import annotations
 
+import os
+from collections.abc import MutableMapping
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +18,17 @@ from pydantic import Field, SecretStr, ValidationError, field_validator, model_v
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Secrets that may instead be supplied as a file path in <NAME>_FILE (Kubernetes/Docker/Vault-agent style).
+SECRET_ENV_VARS = (
+    "DB_PASSWORD",
+    "DB_SUPERUSER_PASSWORD",
+    "DB_MIGRATOR_PASSWORD",
+    "DB_REPORTING_PASSWORD",
+    "KAFKA_SASL_PASSWORD",
+    "KAFKA_SSL_KEY_PASSWORD",
+    "SCHEMA_REGISTRY_PASSWORD",
+)
 
 
 class ConfigurationError(RuntimeError):
@@ -41,11 +54,32 @@ class KafkaSettings(_Base):
 
     bootstrap_servers: str = "localhost:9094"
     security_protocol: Literal["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"] = "PLAINTEXT"
-    sasl_mechanism: str | None = None
+    sasl_mechanism: Literal["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "OAUTHBEARER"] | None = None
     sasl_username: str | None = None
     sasl_password: SecretStr | None = None
     ssl_ca_location: str | None = None
+    # Client certificate for mutual TLS.
+    ssl_certificate_location: str | None = None
+    ssl_key_location: str | None = None
+    ssl_key_password: SecretStr | None = None
+    ssl_endpoint_identification_algorithm: Literal["https", "none"] = "https"
     client_id_prefix: str = "bell-recon"
+    require_secure_transport: bool = Field(default=False, validation_alias="REQUIRE_SECURE_TRANSPORT")
+
+    @model_validator(mode="after")
+    def _check(self) -> KafkaSettings:
+        uses_sasl = self.security_protocol.startswith("SASL")
+        if uses_sasl and self.sasl_mechanism is None:
+            raise ValueError(f"KAFKA_SASL_MECHANISM is required with {self.security_protocol}")
+        if uses_sasl and self.sasl_mechanism != "OAUTHBEARER" and not (self.sasl_username and self.sasl_password):
+            raise ValueError("KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required for SASL PLAIN/SCRAM")
+        if bool(self.ssl_certificate_location) != bool(self.ssl_key_location):
+            raise ValueError("KAFKA_SSL_CERTIFICATE_LOCATION and KAFKA_SSL_KEY_LOCATION must be set together")
+        if self.require_secure_transport and self.security_protocol not in ("SSL", "SASL_SSL"):
+            raise ValueError("REQUIRE_SECURE_TRANSPORT forbids KAFKA_SECURITY_PROTOCOL " + self.security_protocol)
+        if self.require_secure_transport and self.ssl_endpoint_identification_algorithm == "none":
+            raise ValueError("REQUIRE_SECURE_TRANSPORT forbids disabling broker hostname verification")
+        return self
 
     def client_config(self) -> dict[str, str | int | float | bool]:
         conf: dict[str, str | int | float | bool] = {
@@ -58,8 +92,15 @@ class KafkaSettings(_Base):
             conf["sasl.username"] = self.sasl_username
         if self.sasl_password:
             conf["sasl.password"] = self.sasl_password.get_secret_value()
-        if self.ssl_ca_location:
-            conf["ssl.ca.location"] = self.ssl_ca_location
+        if self.security_protocol in ("SSL", "SASL_SSL"):
+            conf["ssl.endpoint.identification.algorithm"] = self.ssl_endpoint_identification_algorithm
+            if self.ssl_ca_location:
+                conf["ssl.ca.location"] = self.ssl_ca_location
+            if self.ssl_certificate_location and self.ssl_key_location:
+                conf["ssl.certificate.location"] = self.ssl_certificate_location
+                conf["ssl.key.location"] = self.ssl_key_location
+            if self.ssl_key_password:
+                conf["ssl.key.password"] = self.ssl_key_password.get_secret_value()
         return conf
 
 
@@ -108,19 +149,27 @@ class DatabaseSettings(_Base):
     user: str = "recon_app"
     password: SecretStr
     sslmode: Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] = "prefer"
+    sslrootcert: str | None = None
+    sslcert: str | None = None
+    sslkey: str | None = None
     connect_timeout_s: int = Field(default=5, ge=1, le=120)
     pool_min_size: int = Field(default=1, ge=1, le=100)
     pool_max_size: int = Field(default=5, ge=1, le=200)
     statement_timeout_ms: int = Field(default=60_000, ge=1000)
+    require_secure_transport: bool = Field(default=False, validation_alias="REQUIRE_SECURE_TRANSPORT")
 
     @model_validator(mode="after")
     def _check(self) -> DatabaseSettings:
         if self.pool_min_size > self.pool_max_size:
             raise ValueError("DB_POOL_MIN_SIZE cannot exceed DB_POOL_MAX_SIZE")
+        if bool(self.sslcert) != bool(self.sslkey):
+            raise ValueError("DB_SSLCERT and DB_SSLKEY must be set together")
+        if self.require_secure_transport and self.sslmode not in ("verify-ca", "verify-full"):
+            raise ValueError("REQUIRE_SECURE_TRANSPORT requires DB_SSLMODE verify-ca or verify-full")
         return self
 
     def conninfo(self, user: str | None = None, password: str | None = None, dbname: str | None = None) -> dict:
-        return {
+        info = {
             "host": self.host,
             "port": self.port,
             "dbname": dbname or self.name,
@@ -131,6 +180,10 @@ class DatabaseSettings(_Base):
             "application_name": "bell-recon",
             "options": f"-c search_path={self.schema_name} -c statement_timeout={self.statement_timeout_ms}",
         }
+        for key in ("sslrootcert", "sslcert", "sslkey"):
+            if getattr(self, key):
+                info[key] = getattr(self, key)
+        return info
 
 
 class AdminDatabaseSettings(_Base):
@@ -269,8 +322,21 @@ class SimulationSettings(_Base):
         return self
 
 
+def apply_secret_files(environ: MutableMapping[str, str] = os.environ) -> None:
+    """Populate SECRET_ENV_VARS from <NAME>_FILE paths; an explicitly set <NAME> wins."""
+    for name in SECRET_ENV_VARS:
+        path = environ.get(f"{name}_FILE")
+        if not path or environ.get(name):
+            continue
+        try:
+            environ[name] = Path(path).read_text(encoding="utf-8").rstrip("\r\n")
+        except OSError as exc:
+            raise ConfigurationError(f"cannot read {name}_FILE: {exc.strerror}") from exc
+
+
 def load[T: BaseSettings](cls: type[T], **overrides: object) -> T:
     """Instantiate a settings class, converting validation failures into a readable startup error."""
+    apply_secret_files()
     try:
         return cls(**overrides)  # type: ignore[arg-type]
     except ValidationError as exc:

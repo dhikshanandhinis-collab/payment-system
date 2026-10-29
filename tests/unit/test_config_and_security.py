@@ -12,8 +12,10 @@ from common.config import (
     BusinessSettings,
     ConfigurationError,
     DatabaseSettings,
+    KafkaSettings,
     SimulationSettings,
     TopicSettings,
+    apply_secret_files,
     load,
 )
 from common.logging_setup import JsonFormatter, redact_value
@@ -68,6 +70,67 @@ def test_rules_reject_unknown_keys(rules):
 def test_log_redaction():
     assert redact_value("db_password", "abc") == "***REDACTED***"
     assert redact_value("account_ref", "SYN-ACCT-12345678") == "***5678"
+
+
+def test_kafka_mutual_tls_and_sasl_config():
+    kafka = load(
+        KafkaSettings,
+        security_protocol="SASL_SSL",
+        sasl_mechanism="SCRAM-SHA-512",
+        sasl_username="recon-ingestion",
+        sasl_password="s3cret",
+        ssl_ca_location="/etc/kafka/ca.pem",
+        ssl_certificate_location="/etc/kafka/client.pem",
+        ssl_key_location="/etc/kafka/client.key",
+    )
+    conf = kafka.client_config()
+    assert conf["security.protocol"] == "SASL_SSL"
+    assert conf["sasl.password"] == "s3cret"
+    assert conf["ssl.certificate.location"] == "/etc/kafka/client.pem"
+    assert conf["ssl.endpoint.identification.algorithm"] == "https"
+    assert "s3cret" not in repr(kafka)
+    assert "ssl.ca.location" not in load(KafkaSettings).client_config()
+
+
+def test_kafka_config_rejects_incomplete_security():
+    with pytest.raises(ConfigurationError, match="SASL_MECHANISM"):
+        load(KafkaSettings, security_protocol="SASL_SSL")
+    with pytest.raises(ConfigurationError, match="SASL_USERNAME"):
+        load(KafkaSettings, security_protocol="SASL_SSL", sasl_mechanism="PLAIN")
+    with pytest.raises(ConfigurationError, match="set together"):
+        load(KafkaSettings, security_protocol="SSL", ssl_certificate_location="/c.pem")
+
+
+def test_require_secure_transport(monkeypatch):
+    monkeypatch.setenv("REQUIRE_SECURE_TRANSPORT", "true")
+    with pytest.raises(ConfigurationError, match="REQUIRE_SECURE_TRANSPORT"):
+        load(KafkaSettings)
+    with pytest.raises(ConfigurationError, match="REQUIRE_SECURE_TRANSPORT"):
+        load(KafkaSettings, security_protocol="SSL", ssl_endpoint_identification_algorithm="none")
+    with pytest.raises(ConfigurationError, match="verify-full"):
+        load(DatabaseSettings, password="x", sslmode="require")
+    assert load(KafkaSettings, security_protocol="SSL").security_protocol == "SSL"
+    db = load(DatabaseSettings, password="x", sslmode="verify-full", sslrootcert="/etc/pg/ca.pem")
+    assert db.conninfo()["sslrootcert"] == "/etc/pg/ca.pem"
+    assert "sslcert" not in db.conninfo()
+
+
+def test_secrets_from_files(tmp_path, monkeypatch):
+    secret = tmp_path / "db_password"
+    secret.write_text("from-file\n", encoding="utf-8")
+    monkeypatch.setenv("DB_PASSWORD", "")  # registers the variable so monkeypatch restores it afterwards
+    monkeypatch.setenv("DB_PASSWORD_FILE", str(secret))
+    assert load(DatabaseSettings).password.get_secret_value() == "from-file"
+
+    monkeypatch.setenv("DB_PASSWORD", "explicit")
+    assert load(DatabaseSettings).password.get_secret_value() == "explicit"
+
+    env = {"KAFKA_SASL_PASSWORD_FILE": str(tmp_path / "missing")}
+    with pytest.raises(ConfigurationError, match="KAFKA_SASL_PASSWORD_FILE"):
+        apply_secret_files(env)
+    env = {"COVERAGE_FILE": str(secret)}
+    apply_secret_files(env)
+    assert env == {"COVERAGE_FILE": str(secret)}
     assert "4111" not in redact_value("note", "card 4111 1111 1111 1111 used")
     record = logging.LogRecord("t", logging.INFO, __file__, 1, "pan 4111111111111111", None, None)
     record.payment_id = "PAY-1"
