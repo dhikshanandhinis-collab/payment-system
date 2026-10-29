@@ -204,6 +204,30 @@ class AdminDatabaseSettings(_Base):
     reporting_password: SecretStr
 
 
+class SchemaRegistrySettings(_Base):
+    """Avro + schema registry. JSON stays the default; ingestion always accepts both formats."""
+
+    model_config = SettingsConfigDict(env_prefix="SCHEMA_REGISTRY_", extra="ignore", case_sensitive=False, frozen=True)
+
+    url: str | None = None
+    username: str | None = None
+    password: SecretStr | None = None
+    ca_location: str | None = None
+    timeout_s: float = Field(default=10.0, gt=0, le=120)
+    # Producers register their schema on first use. Set false in production: schemas are registered and
+    # compatibility-checked by scripts.register_schemas in the deploy pipeline, producers use the latest.
+    auto_register: bool = True
+    compatibility: Literal["BACKWARD", "BACKWARD_TRANSITIVE", "FORWARD", "FORWARD_TRANSITIVE", "FULL",
+                           "FULL_TRANSITIVE"] = "BACKWARD"
+    serialization: Literal["json", "avro"] = Field(default="json", validation_alias="EVENT_SERIALIZATION")
+
+    @model_validator(mode="after")
+    def _check(self) -> SchemaRegistrySettings:
+        if self.serialization == "avro" and not self.url:
+            raise ValueError("EVENT_SERIALIZATION=avro requires SCHEMA_REGISTRY_URL")
+        return self
+
+
 class RetrySettings(_Base):
     model_config = SettingsConfigDict(env_prefix="RETRY_", extra="ignore", case_sensitive=False, frozen=True)
 

@@ -1,0 +1,24 @@
+{
+  "type": "record",
+  "name": "SettlementLineEvent",
+  "namespace": "recon.events.v1",
+  "doc": "Mirror of schemas/settlement_record.json.",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "event_type", "type": "string"},
+    {"name": "schema_version", "type": "string"},
+    {"name": "source_system", "type": "string"},
+    {"name": "event_time", "type": "string"},
+    {"name": "correlation_id", "type": "string"},
+    {"name": "settlement_id", "type": "string"},
+    {"name": "settlement_batch_id", "type": "string"},
+    {"name": "settlement_date", "type": "string"},
+    {"name": "processor_transaction_id", "type": "string"},
+    {"name": "payment_id", "type": "string"},
+    {"name": "transaction_type", "type": "string"},
+    {"name": "gross_amount", "type": "string"},
+    {"name": "fee_amount", "type": "string"},
+    {"name": "net_amount", "type": "string"},
+    {"name": "currency", "type": "string"}
+  ]
+}

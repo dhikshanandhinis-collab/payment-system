@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Callable
 from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -31,9 +32,10 @@ from zoneinfo import ZoneInfo
 
 from confluent_kafka import Producer
 
-from common.config import BusinessSettings, KafkaSettings, ServiceSettings, TopicSettings, load
+from common.config import BusinessSettings, KafkaSettings, SchemaRegistrySettings, ServiceSettings, TopicSettings, load
 from common.kafka_config import producer_config
 from common.logging_setup import configure_logging
+from common.schema_registry import SchemaRegistryClient, serializers_for
 from common.signals import install_signal_handlers
 from generators.settlement_files import HEADER
 from observability import metrics
@@ -92,13 +94,21 @@ def parse_settlement_file(text: str, tz: ZoneInfo) -> list[dict[str, Any]]:
 
 
 class SettlementAdapter:
-    def __init__(self, inbox: Path, topics: TopicSettings, producer: Any, tz: ZoneInfo) -> None:
+    def __init__(
+        self,
+        inbox: Path,
+        topics: TopicSettings,
+        producer: Any,
+        tz: ZoneInfo,
+        serializer: Callable[[dict[str, Any]], bytes] | None = None,
+    ) -> None:
         self.inbox = inbox
         self.processed = inbox.parent / "processed"
         self.rejected = inbox.parent / "rejected"
         self.topic = topics.settlement_events
         self.producer = producer
         self.tz = tz
+        self.encode = serializer or (lambda event: json.dumps(event, separators=(",", ":")).encode())
 
     def run_once(self) -> int:
         """Process every complete file currently in the inbox; returns the number of files handled."""
@@ -129,8 +139,7 @@ class SettlementAdapter:
 
         for event in events:
             key = str(event.get("payment_id") or "").encode() or None
-            self.producer.produce(self.topic, key=key, value=json.dumps(event, separators=(",", ":")).encode(),
-                                  on_delivery=on_delivery)
+            self.producer.produce(self.topic, key=key, value=self.encode(event), on_delivery=on_delivery)
             self.producer.poll(0)
         undelivered = self.producer.flush(60)
         if errors or undelivered:
@@ -161,7 +170,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(service.service_name or "settlement-adapter", service.environment, service.log_level)
     kafka, topics, tz = load(KafkaSettings), load(TopicSettings), load(BusinessSettings).tz
     args.inbox.mkdir(parents=True, exist_ok=True)
-    adapter = SettlementAdapter(args.inbox, topics, Producer(producer_config(kafka, "settlement-adapter", 0)), tz)
+    registry = load(SchemaRegistrySettings)
+    serializer = None
+    if registry.serialization == "avro":
+        serializer = serializers_for(SchemaRegistryClient(registry), topics, registry.auto_register)[
+            topics.settlement_events]
+    adapter = SettlementAdapter(args.inbox, topics, Producer(producer_config(kafka, "settlement-adapter", 0)), tz,
+                                serializer)
     if args.once:
         adapter.run_once()
         return 0

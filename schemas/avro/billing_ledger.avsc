@@ -1,0 +1,24 @@
+{
+  "type": "record",
+  "name": "BillingLedgerEvent",
+  "namespace": "recon.events.v1",
+  "doc": "Mirror of schemas/billing_ledger.json.",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "event_type", "type": "string"},
+    {"name": "schema_version", "type": "string"},
+    {"name": "source_system", "type": "string"},
+    {"name": "event_time", "type": "string"},
+    {"name": "correlation_id", "type": "string"},
+    {"name": "ledger_entry_id", "type": "string"},
+    {"name": "payment_id", "type": ["null", "string"], "default": null},
+    {"name": "account_ref", "type": "string"},
+    {"name": "amount", "type": "string"},
+    {"name": "currency", "type": "string"},
+    {"name": "direction", "type": "string"},
+    {"name": "posting_status", "type": "string"},
+    {"name": "original_ledger_entry_id", "type": ["null", "string"], "default": null},
+    {"name": "processor_reference", "type": ["null", "string"], "default": null},
+    {"name": "adjustment_reason", "type": ["null", "string"], "default": null}
+  ]
+}

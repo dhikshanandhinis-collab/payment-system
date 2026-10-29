@@ -16,6 +16,7 @@ Two write paths produce identical results:
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -25,7 +26,8 @@ from typing import Any
 import psycopg
 
 from common.config import TopicSettings
-from common.errors import ErrorCategory
+from common.errors import ErrorCategory, TransientError
+from common.schema_registry import AvroDecoder, UnknownSchemaError
 from database import repositories as repo
 from database.repositories import KafkaRecord
 from ingestion.error_handler import classify_exception, is_transient
@@ -90,6 +92,7 @@ class _Decoded:
     text: str | None
     meta: EventMetadata
     payload_hash: str
+    error: DecodeError | None = None
 
 
 class _BulkAbort(Exception):
@@ -114,11 +117,13 @@ class EventWriter:
         rules: ReconciliationRules,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         bulk: bool = True,
+        avro_decoder: AvroDecoder | None = None,
     ) -> None:
         self.source_by_topic = topics.source_topics
         self.rules = rules
         self.clock = clock
         self.bulk = bulk
+        self.avro = avro_decoder
 
     def source_for(self, topic: str) -> str:
         return self.source_by_topic.get(topic, "unknown")
@@ -184,12 +189,29 @@ class EventWriter:
     def _decode(self, record: KafkaRecord) -> _Decoded:
         payload_hash = sha256_hex(record.value or b"")
         try:
-            payload = decode_payload(record.value)
-        except DecodeError:
-            return _Decoded(None, None, EventMetadata(), payload_hash)
-        text = (record.value or b"").decode("utf-8")
+            if AvroDecoder.is_avro(record.value):
+                payload = self._decode_avro(record.value or b"")
+                text = json.dumps(payload, separators=(",", ":"))
+            else:
+                payload = decode_payload(record.value)
+                text = (record.value or b"").decode("utf-8")
+        except DecodeError as exc:
+            return _Decoded(None, None, EventMetadata(), payload_hash, exc)
         # PostgreSQL JSONB cannot store NUL characters; such payloads keep only the raw bytes.
         return _Decoded(payload, None if "\\u0000" in text else text, extract_metadata(payload), payload_hash)
+
+    def _decode_avro(self, value: bytes) -> dict[str, Any]:
+        """Confluent wire-format Avro; registry outages are transient (the batch is retried, not quarantined)."""
+        if self.avro is None:
+            raise DecodeError("UNSUPPORTED_ENCODING", "Avro payload received but no schema registry is configured")
+        try:
+            return self.avro.decode(value)
+        except TransientError:
+            raise
+        except UnknownSchemaError as exc:
+            raise DecodeError("UNKNOWN_SCHEMA_ID", str(exc)[:500]) from exc
+        except Exception as exc:  # noqa: BLE001 - any Avro read failure means malformed bytes
+            raise DecodeError("INVALID_AVRO", f"{type(exc).__name__}: {str(exc)[:300]}") from exc
 
     def _validate(self, record: KafkaRecord, decoded: _Decoded) -> tuple[str, SourceEvent]:
         """Checks that need no database access; raises _Quarantine before anything is written."""
@@ -199,10 +221,8 @@ class EventWriter:
                 ValidationFailure(ErrorCategory.VALIDATION, "UNKNOWN_SOURCE_TOPIC", f"topic {record.topic} is not a source topic")
             )
         if decoded.payload is None:
-            try:
-                decode_payload(record.value)
-            except DecodeError as exc:
-                raise _Quarantine(ValidationFailure(ErrorCategory.SERIALIZATION, exc.error_code, exc.detail)) from exc
+            error = decoded.error or DecodeError("EMPTY_PAYLOAD", "message value is empty")
+            raise _Quarantine(ValidationFailure(ErrorCategory.SERIALIZATION, error.error_code, error.detail))
 
         validated = validate_event(decoded.payload or {}, source_system, self.clock(), self.rules.timestamp_rules)
         if isinstance(validated, ValidationFailure):

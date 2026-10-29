@@ -1,5 +1,6 @@
 annotated-types==0.8.0
 confluent-kafka==2.16.1
+fastavro==1.13.1
 prometheus_client==0.26.0
 psycopg==3.3.6
 psycopg-binary==3.3.6

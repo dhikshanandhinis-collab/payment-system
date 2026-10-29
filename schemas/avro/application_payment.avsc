@@ -1,0 +1,20 @@
+{
+  "type": "record",
+  "name": "ApplicationPaymentEvent",
+  "namespace": "recon.events.v1",
+  "doc": "Mirror of schemas/application_payment.json. Amounts and timestamps are strings, exactly as in JSON; enum-like fields are strings so new values do not break compatibility (validated by the Pydantic contract).",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "event_type", "type": "string"},
+    {"name": "schema_version", "type": "string"},
+    {"name": "source_system", "type": "string"},
+    {"name": "event_time", "type": "string"},
+    {"name": "correlation_id", "type": "string"},
+    {"name": "payment_id", "type": "string"},
+    {"name": "account_ref", "type": "string"},
+    {"name": "amount", "type": "string"},
+    {"name": "currency", "type": "string"},
+    {"name": "payment_method", "type": "string"},
+    {"name": "source_status", "type": "string"}
+  ]
+}

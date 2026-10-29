@@ -1,0 +1,20 @@
+{
+  "type": "record",
+  "name": "ProcessorTransactionEvent",
+  "namespace": "recon.events.v1",
+  "doc": "Mirror of schemas/processor_transaction.json.",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "event_type", "type": "string"},
+    {"name": "schema_version", "type": "string"},
+    {"name": "source_system", "type": "string"},
+    {"name": "event_time", "type": "string"},
+    {"name": "correlation_id", "type": "string"},
+    {"name": "processor_transaction_id", "type": "string"},
+    {"name": "payment_id", "type": "string"},
+    {"name": "original_processor_transaction_id", "type": ["null", "string"], "default": null},
+    {"name": "amount", "type": "string"},
+    {"name": "currency", "type": "string"},
+    {"name": "processor_status", "type": "string"}
+  ]
+}

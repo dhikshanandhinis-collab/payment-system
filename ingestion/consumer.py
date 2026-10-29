@@ -31,6 +31,7 @@ from common.config import (
     KafkaSettings,
     ReconciliationSettings,
     RetrySettings,
+    SchemaRegistrySettings,
     ServiceSettings,
     TopicSettings,
     load,
@@ -38,6 +39,7 @@ from common.config import (
 from common.errors import ErrorCategory
 from common.kafka_config import consumer_config, producer_config
 from common.logging_setup import configure_logging
+from common.schema_registry import AvroDecoder, SchemaRegistryClient
 from common.signals import install_signal_handlers
 from database.connection import Database
 from database.repositories import KafkaRecord
@@ -77,6 +79,7 @@ class IngestionService:
         consumer_factory: Callable[[dict], Any] = Consumer,
         dlq_producer: Any | None = None,
         client_id: str = "ingestion",
+        avro_decoder: AvroDecoder | None = None,
     ) -> None:
         self.kafka = kafka
         self.topics = topics
@@ -84,7 +87,7 @@ class IngestionService:
         self.retry = retry
         self.db = database
         self.health = health or metrics.HealthState()
-        self.writer = EventWriter(topics, rules, bulk=ingestion.bulk_writes)
+        self.writer = EventWriter(topics, rules, bulk=ingestion.bulk_writes, avro_decoder=avro_decoder)
         conf = consumer_config(kafka, ingestion, client_id)
         conf["on_commit"] = self._on_commit
         self.consumer = consumer_factory(conf)
@@ -323,6 +326,11 @@ class IngestionService:
             self.dlq.producer.flush(10)
 
 
+def avro_decoder(settings: SchemaRegistrySettings) -> AvroDecoder | None:
+    """Avro is decoded whenever a registry is configured; JSON is always accepted."""
+    return AvroDecoder(SchemaRegistryClient(settings)) if settings.url else None
+
+
 def main() -> None:
     service = load(ServiceSettings)
     configure_logging(service.service_name or "ingestion", service.environment, service.log_level)
@@ -339,7 +347,8 @@ def main() -> None:
     run_with_retry("db_connect", retry, lambda: database.open(wait=True, timeout=30))
     health.probe = database.ping
 
-    svc = IngestionService(kafka, topics, ingestion, retry, rules, database, health)
+    svc = IngestionService(kafka, topics, ingestion, retry, rules, database, health, avro_decoder=avro_decoder(
+        load(SchemaRegistrySettings)))
     install_signal_handlers(svc.stop_event)
     try:
         svc.run()

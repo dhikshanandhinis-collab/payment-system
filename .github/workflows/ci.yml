@@ -42,11 +42,15 @@ jobs:
         run: install -d -m 0777 reports
       - name: Build images
         run: docker compose --profile test build
+      - name: Start schema registry (Avro integration tests)
+        run: docker compose --profile avro up -d --wait schema-registry
       - name: Integration, end-to-end and recovery tests with coverage
+        env:
+          SCHEMA_REGISTRY_URL: http://schema-registry:8081
         run: docker compose --profile test run --rm tests
       - name: Service logs on failure
         if: failure()
-        run: docker compose --profile test logs --tail 100 kafka postgres kafka-init db-init
+        run: docker compose --profile test --profile avro logs --tail 100 kafka postgres kafka-init db-init schema-registry
       - name: Coverage report
         if: always()
         uses: actions/upload-artifact@v4
@@ -56,7 +60,7 @@ jobs:
           if-no-files-found: ignore
       - name: Tear down
         if: always()
-        run: docker compose --profile test down -v
+        run: docker compose --profile test --profile avro down -v
 
   deploy:
     needs: integration
