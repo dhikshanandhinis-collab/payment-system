@@ -47,6 +47,48 @@ class KafkaRecord:
     headers: tuple[tuple[str, bytes | None], ...] = ()
 
 
+_RAW_INSERT = """
+    INSERT INTO raw_payment_events (
+        source_system, source_topic, source_partition, source_offset, kafka_key, kafka_timestamp,
+        source_event_id, event_type, payment_id, event_time, schema_version,
+        payload_bytes, payload_json, payload_hash, processing_status, error_code, validation_error)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+    ON CONFLICT ON CONSTRAINT raw_payment_events_source_position_uk DO NOTHING
+    RETURNING raw_event_id
+"""
+
+
+def raw_event_params(
+    record: KafkaRecord,
+    source_system: str,
+    meta: EventMetadata,
+    payload_text: str | None,
+    payload_hash: str,
+    processing_status: str,
+    error_code: str | None = None,
+    error_detail: str | None = None,
+) -> tuple[Any, ...]:
+    return (
+        source_system,
+        record.topic,
+        record.partition,
+        record.offset,
+        record.key.decode("utf-8", "replace")[:200] if record.key else None,
+        record.timestamp,
+        meta.source_event_id,
+        meta.event_type,
+        meta.payment_id,
+        meta.event_time,
+        meta.schema_version,
+        record.value or b"",
+        payload_text,
+        payload_hash,
+        processing_status,
+        error_code,
+        error_detail,
+    )
+
+
 def insert_raw_event(
     cur: Cursor,
     record: KafkaRecord,
@@ -63,46 +105,76 @@ def insert_raw_event(
     The JSONB copy is cast from the original text by PostgreSQL so numeric values keep full precision.
     """
     cur.execute(
-        """
-        INSERT INTO raw_payment_events (
-            source_system, source_topic, source_partition, source_offset, kafka_key, kafka_timestamp,
-            source_event_id, event_type, payment_id, event_time, schema_version,
-            payload_bytes, payload_json, payload_hash, processing_status, error_code, validation_error)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
-        ON CONFLICT ON CONSTRAINT raw_payment_events_source_position_uk DO NOTHING
-        RETURNING raw_event_id
-        """,
-        (
-            source_system,
-            record.topic,
-            record.partition,
-            record.offset,
-            record.key.decode("utf-8", "replace")[:200] if record.key else None,
-            record.timestamp,
-            meta.source_event_id,
-            meta.event_type,
-            meta.payment_id,
-            meta.event_time,
-            meta.schema_version,
-            record.value or b"",
-            payload_text,
-            payload_hash,
-            processing_status,
-            error_code,
-            error_detail,
+        _RAW_INSERT,
+        raw_event_params(
+            record, source_system, meta, payload_text, payload_hash, processing_status, error_code, error_detail
         ),
     )
     row = cur.fetchone()
     return int(row[0]) if row else None
 
 
+def insert_raw_events(cur: Cursor, params: Sequence[tuple[Any, ...]]) -> list[int | None]:
+    """Bulk form of insert_raw_event (one pipelined round trip); ids are returned in input order."""
+    if not params:
+        return []
+    cur.executemany(_RAW_INSERT, params, returning=True)
+    ids: list[int | None] = []
+    while True:
+        row = cur.fetchone()
+        ids.append(int(row[0]) if row else None)
+        if not cur.nextset():
+            break
+    if len(ids) != len(params):
+        raise RuntimeError(f"expected {len(params)} raw insert results, got {len(ids)}")
+    return ids
+
+
 def update_raw_status(
     cur: Cursor, raw_event_id: int, status: str, error_code: str | None = None, error_detail: str | None = None
 ) -> None:
-    cur.execute(
-        "UPDATE raw_payment_events SET processing_status = %s, error_code = %s, validation_error = %s "
-        "WHERE raw_event_id = %s",
-        (status, error_code, error_detail, raw_event_id),
+    update_raw_statuses(cur, [(status, error_code, error_detail, raw_event_id)])
+
+
+def update_raw_statuses(cur: Cursor, rows: Sequence[tuple[str, str | None, str | None, int]]) -> None:
+    """rows: (status, error_code, error_detail, raw_event_id)."""
+    if rows:
+        cur.executemany(
+            "UPDATE raw_payment_events SET processing_status = %s, error_code = %s, validation_error = %s "
+            "WHERE raw_event_id = %s",
+            rows,
+        )
+
+
+_QUARANTINE_INSERT = """
+    INSERT INTO quarantined_events (raw_event_id, source_topic, source_partition, source_offset, source_system,
+        source_event_id, payment_id, error_category, error_code, error_detail, payload_bytes)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT ON CONSTRAINT quarantined_events_source_position_uk DO NOTHING
+"""
+
+
+def quarantine_params(
+    raw_event_id: int | None,
+    record: KafkaRecord,
+    source_system: str,
+    meta: EventMetadata,
+    error_category: str,
+    error_code: str,
+    error_detail: str,
+) -> tuple[Any, ...]:
+    return (
+        raw_event_id,
+        record.topic,
+        record.partition,
+        record.offset,
+        source_system,
+        meta.source_event_id,
+        meta.payment_id,
+        error_category,
+        error_code,
+        error_detail[:4000],
+        record.value or b"",
     )
 
 
@@ -117,26 +189,8 @@ def insert_quarantine(
     error_detail: str,
 ) -> int:
     cur.execute(
-        """
-        INSERT INTO quarantined_events (raw_event_id, source_topic, source_partition, source_offset, source_system,
-            source_event_id, payment_id, error_category, error_code, error_detail, payload_bytes)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT ON CONSTRAINT quarantined_events_source_position_uk DO NOTHING
-        RETURNING quarantine_id
-        """,
-        (
-            raw_event_id,
-            record.topic,
-            record.partition,
-            record.offset,
-            source_system,
-            meta.source_event_id,
-            meta.payment_id,
-            error_category,
-            error_code,
-            error_detail[:4000],
-            record.value or b"",
-        ),
+        _QUARANTINE_INSERT + " RETURNING quarantine_id",
+        quarantine_params(raw_event_id, record, source_system, meta, error_category, error_code, error_detail),
     )
     row = cur.fetchone()
     if row is None:
@@ -150,6 +204,49 @@ def insert_quarantine(
     return int(row[0])
 
 
+def insert_quarantines(cur: Cursor, params: Sequence[tuple[Any, ...]]) -> None:
+    if params:
+        cur.executemany(_QUARANTINE_INSERT, params)
+
+
+# ---------------------------------------------------------------- Idempotency keys
+
+DedupKey = tuple[str, str, str]  # (source_system, key_type, key_value)
+
+
+def fetch_dedup_hashes(cur: Cursor, keys: Iterable[DedupKey]) -> dict[DedupKey, str]:
+    wanted = sorted(set(keys))
+    if not wanted:
+        return {}
+    cur.execute(
+        """
+        SELECT d.source_system, d.key_type, d.key_value, d.content_hash
+        FROM deduplication_keys d
+        JOIN unnest(%s::text[], %s::text[], %s::text[]) AS k(source_system, key_type, key_value)
+          ON d.source_system = k.source_system AND d.key_type = k.key_type AND d.key_value = k.key_value
+        """,
+        ([k[0] for k in wanted], [k[1] for k in wanted], [k[2] for k in wanted]),
+    )
+    return {(s, t, v): h for s, t, v, h in cur.fetchall()}
+
+
+def insert_dedup_keys(cur: Cursor, rows: Sequence[tuple[str, str, str, str, int]]) -> int:
+    """rows: (source_system, key_type, key_value, content_hash, raw_event_id). Returns rows actually inserted."""
+    if not rows:
+        return 0
+    ordered = sorted(rows)  # consistent lock order across concurrent consumers
+    cur.execute(
+        """
+        INSERT INTO deduplication_keys (source_system, key_type, key_value, content_hash, first_raw_event_id)
+        SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[], %s::bigint[])
+        ON CONFLICT (source_system, key_type, key_value) DO NOTHING
+        RETURNING 1
+        """,
+        tuple([r[i] for r in ordered] for i in range(5)),
+    )
+    return len(cur.fetchall())
+
+
 # ---------------------------------------------------------------- Silver
 
 
@@ -158,41 +255,63 @@ def insert_silver_row(cur: Cursor, row: SilverRow, raw_event_id: int) -> bool:
         raise ValueError(f"unknown silver table {row.table}")
     values = {**row.values, "raw_event_id": raw_event_id}
     columns = list(values)
-    query = sql.SQL("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING RETURNING 1").format(
-        sql.Identifier(row.table),
+    cur.execute(_silver_insert(row.table, columns) + sql.SQL(" RETURNING 1"), [values[c] for c in columns])
+    return cur.fetchone() is not None
+
+
+def _silver_insert(table: str, columns: Sequence[str]) -> sql.Composed:
+    return sql.SQL("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING").format(
+        sql.Identifier(table),
         sql.SQL(", ").join(sql.Identifier(c) for c in columns),
         sql.SQL(", ").join(sql.Placeholder() for _ in columns),
     )
-    cur.execute(query, [values[c] for c in columns])
-    return cur.fetchone() is not None
+
+
+def insert_silver_rows(cur: Cursor, rows: Sequence[tuple[SilverRow, int]]) -> None:
+    """Bulk form of insert_silver_row: one pipelined executemany per (table, column set)."""
+    groups: dict[tuple[str, tuple[str, ...]], list[list[Any]]] = {}
+    for row, raw_event_id in rows:
+        if row.table not in SILVER_TABLES:
+            raise ValueError(f"unknown silver table {row.table}")
+        values = {**row.values, "raw_event_id": raw_event_id}
+        columns = tuple(values)
+        groups.setdefault((row.table, columns), []).append([values[c] for c in columns])
+    for (table, columns), params in groups.items():
+        cur.executemany(_silver_insert(table, columns), params)
+
+
+_PAYMENT_REQUEST_UPSERT = """
+    INSERT INTO payment_requests (payment_id, account_ref, amount, currency, payment_method, initiated_at,
+        initiated_event_id, first_seen_event_id, initiation_count)
+    VALUES (%(payment_id)s, %(account_ref)s, %(amount)s, %(currency)s, %(payment_method)s, %(event_time)s,
+        CASE WHEN %(is_initiation)s THEN %(source_event_id)s END, %(source_event_id)s,
+        CASE WHEN %(is_initiation)s THEN 1 ELSE 0 END)
+    ON CONFLICT (payment_id) DO UPDATE SET
+        initiation_count = payment_requests.initiation_count + EXCLUDED.initiation_count,
+        account_ref = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
+            THEN EXCLUDED.account_ref ELSE payment_requests.account_ref END,
+        amount = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
+            THEN EXCLUDED.amount ELSE payment_requests.amount END,
+        currency = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
+            THEN EXCLUDED.currency ELSE payment_requests.currency END,
+        payment_method = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
+            THEN EXCLUDED.payment_method ELSE payment_requests.payment_method END,
+        initiated_at = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
+            THEN EXCLUDED.initiated_at ELSE LEAST(payment_requests.initiated_at, EXCLUDED.initiated_at) END,
+        initiated_event_id = COALESCE(payment_requests.initiated_event_id, EXCLUDED.initiated_event_id),
+        updated_at = now()
+"""
 
 
 def upsert_payment_request(cur: Cursor, request: dict[str, Any]) -> None:
     """First app event creates the row; the first PAYMENT_INITIATED event is authoritative."""
-    cur.execute(
-        """
-        INSERT INTO payment_requests (payment_id, account_ref, amount, currency, payment_method, initiated_at,
-            initiated_event_id, first_seen_event_id, initiation_count)
-        VALUES (%(payment_id)s, %(account_ref)s, %(amount)s, %(currency)s, %(payment_method)s, %(event_time)s,
-            CASE WHEN %(is_initiation)s THEN %(source_event_id)s END, %(source_event_id)s,
-            CASE WHEN %(is_initiation)s THEN 1 ELSE 0 END)
-        ON CONFLICT (payment_id) DO UPDATE SET
-            initiation_count = payment_requests.initiation_count + EXCLUDED.initiation_count,
-            account_ref = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
-                THEN EXCLUDED.account_ref ELSE payment_requests.account_ref END,
-            amount = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
-                THEN EXCLUDED.amount ELSE payment_requests.amount END,
-            currency = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
-                THEN EXCLUDED.currency ELSE payment_requests.currency END,
-            payment_method = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
-                THEN EXCLUDED.payment_method ELSE payment_requests.payment_method END,
-            initiated_at = CASE WHEN payment_requests.initiated_event_id IS NULL AND EXCLUDED.initiated_event_id IS NOT NULL
-                THEN EXCLUDED.initiated_at ELSE LEAST(payment_requests.initiated_at, EXCLUDED.initiated_at) END,
-            initiated_event_id = COALESCE(payment_requests.initiated_event_id, EXCLUDED.initiated_event_id),
-            updated_at = now()
-        """,
-        request,
-    )
+    cur.execute(_PAYMENT_REQUEST_UPSERT, request)
+
+
+def upsert_payment_requests(cur: Cursor, requests: Sequence[dict[str, Any]]) -> None:
+    """Bulk form; executemany keeps input order, which the upsert semantics depend on."""
+    if requests:
+        cur.executemany(_PAYMENT_REQUEST_UPSERT, requests)
 
 
 def enqueue_payments(cur: Cursor, payment_ids: Iterable[str], trigger_type: str) -> int:

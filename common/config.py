@@ -221,6 +221,7 @@ class IngestionSettings(_Base):
     session_timeout_ms: int = Field(default=45_000, ge=6_000)
     lag_report_interval_s: float = Field(default=15.0, gt=0)
     publish_dlq: bool = True
+    bulk_writes: bool = True
 
 
 class ReconciliationSettings(_Base):

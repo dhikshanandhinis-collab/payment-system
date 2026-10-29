@@ -29,6 +29,9 @@ REDELIVERED_RECORDS = Counter(
 DLQ_PUBLISHED = Counter("recon_dlq_published_total", "Messages published to the dead-letter topic", ["outcome"])
 RETRIES = Counter("recon_retries_total", "Retry attempts after transient failures", ["component"])
 BATCH_FAILURES = Counter("recon_ingestion_batch_failures_total", "Ingestion batches rolled back", ["error_category"])
+BULK_FALLBACKS = Counter(
+    "recon_ingestion_bulk_fallbacks_total", "Batches re-run on the per-record path after a bulk write abort", ["reason"]
+)
 OFFSET_COMMITS = Counter("recon_offset_commits_total", "Kafka offset commit results", ["outcome"])
 
 CONSUMER_PROCESSING_SECONDS = Histogram(

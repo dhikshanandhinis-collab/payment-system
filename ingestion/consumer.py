@@ -84,7 +84,7 @@ class IngestionService:
         self.retry = retry
         self.db = database
         self.health = health or metrics.HealthState()
-        self.writer = EventWriter(topics, rules)
+        self.writer = EventWriter(topics, rules, bulk=ingestion.bulk_writes)
         conf = consumer_config(kafka, ingestion, client_id)
         conf["on_commit"] = self._on_commit
         self.consumer = consumer_factory(conf)

@@ -124,6 +124,64 @@ def test_invalid_payloads_are_quarantined_with_original_bytes(database, rules):
     assert scalar(database, "SELECT count(*) FROM payment_requests WHERE payment_id IN ('PAY-IT-DB-0003','PAY-IT-DB-0004')") == 0
 
 
+@pytest.mark.parametrize("bulk", [True, False], ids=["bulk", "per_record"])
+def test_bulk_and_per_record_paths_produce_identical_results(database, rules, bulk):
+    tag = "B" if bulk else "P"
+    pid = f"PAY-IT-DB-PATH-{tag}"
+    initiated = app(pid, t=T0, amount="10.00")
+    capture = proc(pid, "CAPTURE", f"C-IT-PATH-{tag}", "10.00", T0)
+    resend = {**capture, "event_id": f"EVT-RESEND-PATH-{tag}", "event_time": (T0 + timedelta(seconds=30)).isoformat()}
+    conflict = {**capture, "event_id": f"EVT-CONFLICT-PATH-{tag}", "amount": "11.00"}
+    reused_id = {**app(pid, "PAYMENT_SUCCEEDED", t=T0, amount="10.00"), "event_id": initiated["event_id"]}
+    invalid = app(f"{pid}-X", t=T0)
+    invalid["amount"] = "-1.00"
+    first = rec(capture)
+    batch = [rec(initiated), first, rec(capture), rec(resend), rec(conflict), rec(reused_id), rec(invalid), first]
+
+    writer = EventWriter(TOPICS, rules, bulk=bulk)
+    with database.transaction() as conn:
+        results = writer.process_batch(conn, batch)
+
+    assert [r.outcome for r in results] == [
+        PROCESSED, PROCESSED, DUPLICATE_DELIVERY, DUPLICATE_BUSINESS_EVENT, QUARANTINED, QUARANTINED, QUARANTINED,
+        ALREADY_INGESTED,
+    ]
+    assert [r.error_code for r in results[4:7]] == ["BUSINESS_KEY_CONFLICT", "EVENT_ID_CONFLICT", "INVALID_AMOUNT"]
+    with database.transaction() as conn:
+        statuses = [s for (s,) in conn.execute(
+            "SELECT processing_status FROM raw_payment_events WHERE source_offset = ANY(%s) ORDER BY source_offset",
+            ([r.offset for r in batch],),
+        ).fetchall()]
+        quarantined = conn.execute(
+            "SELECT count(*) FROM quarantined_events q JOIN raw_payment_events r USING (raw_event_id) "
+            "WHERE r.source_offset = ANY(%s) AND r.processing_status = 'QUARANTINED'", ([r.offset for r in batch],),
+        ).fetchone()[0]
+        captures = conn.execute("SELECT count(*), sum(amount) FROM processor_transactions WHERE payment_id = %s",
+                                (pid,)).fetchone()
+        request = conn.execute("SELECT amount, initiation_count FROM payment_requests WHERE payment_id = %s",
+                               (pid,)).fetchone()
+        queued = conn.execute("SELECT count(*) FROM reconciliation_work_queue WHERE payment_id = %s", (pid,)).fetchone()[0]
+    assert statuses == ["PROCESSED", "PROCESSED", "DUPLICATE_DELIVERY", "DUPLICATE_BUSINESS_EVENT", "QUARANTINED",
+                        "QUARANTINED", "QUARANTINED"]
+    assert quarantined == 3
+    assert captures[0] == 1 and captures[1] == 10
+    assert str(request[0]) == "10.00" and request[1] == 1
+    assert queued == 1
+
+
+def test_bulk_falls_back_to_per_record_when_a_key_appears_concurrently(database, rules, monkeypatch):
+    from database import repositories
+
+    pid = "PAY-IT-DB-RACE"
+    original = repositories.fetch_dedup_hashes
+    monkeypatch.setattr(repositories, "fetch_dedup_hashes", lambda cur, keys: {})  # stale read, as in a race
+    write(database, rules, [rec(app(pid, t=T0, event_id="EVT-RACE-0001"))])
+    monkeypatch.setattr(repositories, "fetch_dedup_hashes", lambda cur, keys: {})
+    [result] = write(database, rules, [rec(app(pid, t=T0, event_id="EVT-RACE-0001"))])
+    monkeypatch.setattr(repositories, "fetch_dedup_hashes", original)
+    assert result.outcome == DUPLICATE_DELIVERY  # bulk insert saw the existing key, per-record path resolved it
+
+
 def test_batch_is_atomic(database, rules):
     pid = "PAY-IT-DB-0005"
     writer = EventWriter(TOPICS, rules)
