@@ -65,6 +65,7 @@ flowchart LR
 ```
 
 Details, sequence diagrams, deployment topology and Kafka design: [docs/architecture.md](docs/architecture.md).
+Environments, Kubernetes deployment, cutover to real sources and go-live checklist: [docs/production.md](docs/production.md).
 Failure/recovery flow: [docs/failure_recovery.md](docs/failure_recovery.md).
 
 ## 3. Technology stack
