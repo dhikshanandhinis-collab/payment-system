@@ -8,12 +8,20 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from processing.models import AppPaymentEvent, BillingLedgerEvent, ProcessorTransactionEvent
-from processing.reconciliation_engine import AppEvent, LedgerRecord, PaymentRequest, PaymentSnapshot, ProcessorRecord
+from processing.models import AppPaymentEvent, BillingLedgerEvent, ProcessorTransactionEvent, SettlementEvent
+from processing.reconciliation_engine import (
+    AppEvent,
+    LedgerRecord,
+    PaymentRequest,
+    PaymentSnapshot,
+    ProcessorRecord,
+    SettlementRecord,
+)
 
 APP_TOPIC = "mybell.payment.events"
 PROC_TOPIC = "processor.transaction.events"
 LEDGER_TOPIC = "billing.ledger.events"
+SETTLEMENT_TOPIC = "processor.settlement.events"
 
 _counter = itertools.count(1)
 NOW = datetime(2026, 10, 28, 15, 0, tzinfo=UTC)
@@ -135,6 +143,38 @@ def ledger(
     return payload
 
 
+def settlement(
+    payment_id: str,
+    txn_id: str,
+    transaction_type: str = "CAPTURE",
+    gross: str = "100.00",
+    fee: str = "2.55",
+    settlement_date: str = "2026-10-28",
+    settlement_id: str | None = None,
+    currency: str = "CAD",
+) -> dict[str, Any]:
+    sign = 1 if transaction_type in ("CAPTURE", "CHARGEBACK_REVERSAL") else -1
+    sid = settlement_id or f"STL-{txn_id}"
+    return {
+        "event_id": f"STL-EVT-{sid}",
+        "event_type": "SETTLEMENT_LINE",
+        "schema_version": "1.0",
+        "source_system": "processor_settlement",
+        "event_time": f"{settlement_date}T04:00:00Z",
+        "correlation_id": "STB-TEST-0001",
+        "settlement_id": sid,
+        "settlement_batch_id": "STB-TEST-0001",
+        "settlement_date": settlement_date,
+        "processor_transaction_id": txn_id,
+        "payment_id": payment_id,
+        "transaction_type": transaction_type,
+        "gross_amount": gross,
+        "fee_amount": fee,
+        "net_amount": str(sign * Decimal(gross) - Decimal(fee)),
+        "currency": currency,
+    }
+
+
 def matched_payment(pid: str, amount: str = "100.00", t0: datetime = OLD, method: str = "CREDIT_CARD") -> list[dict]:
     s = pid.split("-", 1)[-1]
     return [
@@ -147,9 +187,8 @@ def matched_payment(pid: str, amount: str = "100.00", t0: datetime = OLD, method
 
 
 def topic_for(payload: dict[str, Any]) -> str:
-    return {"mybell_app": APP_TOPIC, "payment_processor": PROC_TOPIC, "billing_ledger": LEDGER_TOPIC}[
-        payload["source_system"]
-    ]
+    return {"mybell_app": APP_TOPIC, "payment_processor": PROC_TOPIC, "billing_ledger": LEDGER_TOPIC,
+            "processor_settlement": SETTLEMENT_TOPIC}[payload["source_system"]]
 
 
 def encode(payload: dict[str, Any]) -> bytes:
@@ -167,8 +206,14 @@ def build_snapshot(payment_id: str, payloads: list[dict[str, Any]]) -> PaymentSn
     app_events: list[AppEvent] = []
     proc_records: dict[str, ProcessorRecord] = {}
     ledger_records: dict[str, LedgerRecord] = {}
+    settlements: dict[str, SettlementRecord] = {}
     for p in payloads:
-        if p["source_system"] == "mybell_app":
+        if p["source_system"] == "processor_settlement":
+            s = SettlementEvent.model_validate(p)
+            settlements.setdefault(s.settlement_id, SettlementRecord(
+                s.settlement_id, s.processor_transaction_id, s.transaction_type.value, s.gross_amount, s.fee_amount,
+                s.net_amount, s.currency, s.settlement_date, s.event_time))
+        elif p["source_system"] == "mybell_app":
             e = AppPaymentEvent.model_validate(p)
             app_events.append(AppEvent(e.event_id, e.event_type.value, e.source_status.value, e.amount, e.currency, e.event_time))
             if first_app is None:
@@ -195,7 +240,7 @@ def build_snapshot(payment_id: str, payloads: list[dict[str, Any]]) -> PaymentSn
         request = PaymentRequest(first_app.payment_id, first_app.account_ref, first_app.amount, first_app.currency,
                                  first_app.payment_method.value, first_app.event_time, None)
     return PaymentSnapshot(payment_id, request, tuple(app_events), tuple(proc_records.values()),
-                           tuple(ledger_records.values()))
+                           tuple(ledger_records.values()), settlements=tuple(settlements.values()))
 
 
 def D(value: str) -> Decimal:  # noqa: N802 - short helper for readability in assertions

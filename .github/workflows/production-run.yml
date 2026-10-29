@@ -90,7 +90,8 @@ jobs:
 
       - name: Stop sources and let ingestion and reconciliation drain
         run: |
-          docker compose stop mybell-producer processor-producer billing-producer batch-scheduler
+          # settlement-producer writes a final settlement file on shutdown; the adapter publishes it.
+          docker compose stop mybell-producer processor-producer billing-producer batch-scheduler settlement-producer
           sleep 120
 
       - name: Business-date reconciliation for today
@@ -114,6 +115,9 @@ jobs:
                       round((percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM ingestion_time - kafka_timestamp)))::numeric, 2) AS kafka_to_db_p95_s
                FROM recon.raw_payment_events WHERE ingestion_time >= '$RUN_START'"
             q "SELECT reconciliation_status, count(*) AS cases FROM recon.reconciliation_cases GROUP BY 1 ORDER BY 2 DESC"
+            q "SELECT settlement_status, count(*) AS cases, sum(settled_net_amount) AS settled_net,
+                      sum(settlement_fee_amount) AS fees
+               FROM recon.reconciliation_cases GROUP BY 1 ORDER BY 2 DESC"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY" > run-report/summary.md
           docker compose run --rm tools python -m scripts.report --all > run-report/reports.txt 2>&1 || true

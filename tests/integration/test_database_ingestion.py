@@ -21,7 +21,7 @@ from ingestion.event_writer import (
     QUARANTINED,
     EventWriter,
 )
-from tests.factories import app, ledger, proc
+from tests.factories import app, ledger, matched_payment, proc, settlement
 
 TOPICS = TopicSettings()
 _offsets = itertools.count(1_000)
@@ -31,7 +31,8 @@ T0 = (datetime.now(UTC) - timedelta(hours=2)).replace(microsecond=0)
 def rec(payload: dict | bytes, topic: str | None = None, offset: int | None = None) -> KafkaRecord:
     if isinstance(payload, dict):
         topic = topic or {"mybell_app": TOPICS.app_events, "payment_processor": TOPICS.processor_events,
-                          "billing_ledger": TOPICS.ledger_events}[payload["source_system"]]
+                          "billing_ledger": TOPICS.ledger_events,
+                          "processor_settlement": TOPICS.settlement_events}[payload["source_system"]]
         value = json.dumps(payload).encode()
     else:
         value = payload
@@ -180,6 +181,33 @@ def test_bulk_falls_back_to_per_record_when_a_key_appears_concurrently(database,
     [result] = write(database, rules, [rec(app(pid, t=T0, event_id="EVT-RACE-0001"))])
     monkeypatch.setattr(repositories, "fetch_dedup_hashes", original)
     assert result.outcome == DUPLICATE_DELIVERY  # bulk insert saw the existing key, per-record path resolved it
+
+
+def test_settlement_lines_are_ingested_and_reconciled(database, rules):
+    from processing.case_manager import reconcile_payment
+    from tests.harness import TZ
+
+    pid = "PAY-IT-DB-STL1"
+    events = matched_payment(pid, "80.00", t0=T0)
+    capture_id = events[2]["processor_transaction_id"]
+    line = settlement(pid, capture_id, gross="80.00", fee="2.06", settlement_date=T0.date().isoformat())
+    line["event_time"] = T0.isoformat()  # never in the future, whatever time CI runs
+    results = write(database, rules, [rec(e) for e in events] + [rec(line)])
+    assert [r.outcome for r in results] == [PROCESSED] * 6
+    assert write(database, rules, [rec(line)])[0].outcome == DUPLICATE_DELIVERY  # file re-processed
+    corrected = {**line, "gross_amount": "79.00", "net_amount": "76.94"}
+    assert write(database, rules, [rec(corrected)])[0].error_code == "EVENT_ID_CONFLICT"
+
+    with database.transaction() as conn:
+        reconcile_payment(conn, pid, rules, TZ, "STREAM")
+        case = conn.execute(
+            "SELECT reconciliation_status, settlement_status, settled_net_amount, settlement_fee_amount "
+            "FROM reconciliation_cases WHERE payment_id = %s", (pid,)).fetchone()
+        summary = conn.execute(
+            "SELECT settlement_lines, gross_credits, fees, net_payout FROM gold_settlement_summary "
+            "WHERE settlement_date = %s", (T0.date(),)).fetchone()
+    assert case[0] == "MATCHED" and case[1] == "SETTLED" and str(case[2]) == "77.94" and str(case[3]) == "2.06"
+    assert summary[0] >= 1 and summary[1] >= 80 and summary[2] >= 2
 
 
 def test_batch_is_atomic(database, rules):

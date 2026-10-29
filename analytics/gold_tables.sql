@@ -10,7 +10,7 @@
 
 DROP VIEW IF EXISTS gold_daily_payment_summary, gold_reconciliation_exceptions, gold_financial_differences,
     gold_source_completeness, gold_processing_latency, gold_refund_summary,
-    gold_reconciliation_run_summary CASCADE;
+    gold_reconciliation_run_summary, gold_settlement_summary CASCADE;
 
 CREATE OR REPLACE FUNCTION business_date(ts TIMESTAMPTZ) RETURNS DATE
 LANGUAGE sql STABLE AS $$
@@ -232,7 +232,46 @@ SELECT
     r.error_message
 FROM reconciliation_run_history r;
 
+-- 8. Settlement (cash) reconciliation per settlement date and currency: what the processor paid out,
+--    the fees it kept, and how many cases still have an open settlement problem.
+CREATE VIEW gold_settlement_summary AS
+WITH lines AS (
+    SELECT settlement_date, currency,
+           count(*)                                                       AS settlement_lines,
+           count(DISTINCT settlement_batch_id)                            AS settlement_files,
+           sum(gross_amount) FILTER (WHERE transaction_type IN ('CAPTURE', 'CHARGEBACK_REVERSAL')) AS gross_credits,
+           sum(gross_amount) FILTER (WHERE transaction_type IN ('REFUND', 'REVERSAL', 'CHARGEBACK')) AS gross_debits,
+           sum(fee_amount)                                                AS fees,
+           sum(net_amount)                                                AS net_payout,
+           count(*) FILTER (WHERE transaction_type = 'CHARGEBACK')        AS chargebacks
+    FROM settlement_records
+    GROUP BY settlement_date, currency
+), open_cases AS (
+    SELECT c.business_date AS settlement_date, c.currency,
+           count(*) FILTER (WHERE c.settlement_status = 'UNSETTLED')            AS unsettled_cases,
+           count(*) FILTER (WHERE c.settlement_status = 'SETTLEMENT_MISMATCH')  AS settlement_mismatch_cases,
+           count(*) FILTER (WHERE c.settlement_status = 'PENDING')              AS settlement_pending_cases
+    FROM reconciliation_cases c
+    GROUP BY c.business_date, c.currency
+)
+SELECT
+    coalesce(l.settlement_date, o.settlement_date) AS settlement_date,
+    coalesce(l.currency, o.currency)               AS currency,
+    coalesce(l.settlement_files, 0)                AS settlement_files,
+    coalesce(l.settlement_lines, 0)                AS settlement_lines,
+    coalesce(l.gross_credits, 0)                   AS gross_credits,
+    coalesce(l.gross_debits, 0)                    AS gross_debits,
+    coalesce(l.fees, 0)                            AS fees,
+    coalesce(l.net_payout, 0)                      AS net_payout,
+    coalesce(l.chargebacks, 0)                     AS chargebacks,
+    coalesce(o.unsettled_cases, 0)                 AS unsettled_cases,
+    coalesce(o.settlement_mismatch_cases, 0)       AS settlement_mismatch_cases,
+    coalesce(o.settlement_pending_cases, 0)        AS settlement_pending_cases
+FROM lines l
+FULL OUTER JOIN open_cases o ON o.settlement_date = l.settlement_date AND o.currency = l.currency;
+
 GRANT EXECUTE ON FUNCTION business_date(TIMESTAMPTZ) TO {{app_role}}, {{reporting_role}};
 GRANT SELECT ON gold_daily_payment_summary, gold_reconciliation_exceptions, gold_financial_differences,
-    gold_source_completeness, gold_processing_latency, gold_refund_summary, gold_reconciliation_run_summary
+    gold_source_completeness, gold_processing_latency, gold_refund_summary, gold_reconciliation_run_summary,
+    gold_settlement_summary
     TO {{app_role}}, {{reporting_role}};

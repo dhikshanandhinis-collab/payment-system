@@ -8,7 +8,7 @@ Amounts are positive magnitudes; the financial direction is carried by the event
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -28,6 +28,7 @@ class SourceSystem(StrEnum):
     MYBELL_APP = "mybell_app"
     PAYMENT_PROCESSOR = "payment_processor"
     BILLING_LEDGER = "billing_ledger"
+    PROCESSOR_SETTLEMENT = "processor_settlement"
 
 
 class PaymentMethod(StrEnum):
@@ -247,10 +248,81 @@ class BillingLedgerEvent(_Envelope, _Monetary):
         return self
 
 
-SourceEvent = AppPaymentEvent | ProcessorTransactionEvent | BillingLedgerEvent
+class SettlementTransactionType(StrEnum):
+    CAPTURE = "CAPTURE"
+    REFUND = "REFUND"
+    REVERSAL = "REVERSAL"
+    CHARGEBACK = "CHARGEBACK"
+    CHARGEBACK_REVERSAL = "CHARGEBACK_REVERSAL"
 
-MODEL_BY_SOURCE: dict[str, type[AppPaymentEvent] | type[ProcessorTransactionEvent] | type[BillingLedgerEvent]] = {
+
+# Direction of the gross amount from the merchant's point of view (funds received +1, paid back -1).
+SETTLEMENT_SIGN: dict[SettlementTransactionType, int] = {
+    SettlementTransactionType.CAPTURE: 1,
+    SettlementTransactionType.CHARGEBACK_REVERSAL: 1,
+    SettlementTransactionType.REFUND: -1,
+    SettlementTransactionType.REVERSAL: -1,
+    SettlementTransactionType.CHARGEBACK: -1,
+}
+
+_SIGNED_AMOUNT_TEXT = re.compile(r"^-?(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$")
+
+
+def _decimal_field(value: object, *, signed: bool) -> object:
+    pattern = _SIGNED_AMOUNT_TEXT if signed else _AMOUNT_TEXT
+    if not isinstance(value, str) or not pattern.match(value):
+        raise ValueError("must be a decimal string with at most 2 decimal places" + ("" if signed else ", not negative"))
+    return value
+
+
+class SettlementEvent(_Envelope):
+    """One line of a processor settlement (funding) file, published by ingestion/settlement_adapter.py."""
+
+    source_system: Literal["processor_settlement"]
+    event_type: Literal["SETTLEMENT_LINE"]
+    settlement_id: Identifier
+    settlement_batch_id: Identifier
+    settlement_date: date
+    processor_transaction_id: Identifier
+    payment_id: Identifier
+    transaction_type: SettlementTransactionType
+    gross_amount: Amount
+    fee_amount: Annotated[Decimal, Field(ge=Decimal("0"), max_digits=14, decimal_places=2)]
+    net_amount: Annotated[Decimal, Field(max_digits=14, decimal_places=2)]
+    currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
+
+    @field_validator("gross_amount", "fee_amount", mode="before")
+    @classmethod
+    def _unsigned(cls, value: object) -> object:
+        return _decimal_field(value, signed=False)
+
+    @field_validator("net_amount", mode="before")
+    @classmethod
+    def _signed(cls, value: object) -> object:
+        return _decimal_field(value, signed=True)
+
+    @field_validator("currency")
+    @classmethod
+    def _iso(cls, value: str) -> str:
+        if value not in ISO_4217_CODES:
+            raise ValueError(f"unsupported ISO 4217 currency code {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _net_is_gross_minus_fee(self) -> SettlementEvent:
+        expected = SETTLEMENT_SIGN[self.transaction_type] * self.gross_amount - self.fee_amount
+        if self.net_amount != expected:
+            raise ValueError(f"net_amount must equal signed gross_amount minus fee_amount ({expected})")
+        return self
+
+
+SourceEvent = AppPaymentEvent | ProcessorTransactionEvent | BillingLedgerEvent | SettlementEvent
+
+MODEL_BY_SOURCE: dict[
+    str, type[AppPaymentEvent] | type[ProcessorTransactionEvent] | type[BillingLedgerEvent] | type[SettlementEvent]
+] = {
     SourceSystem.MYBELL_APP.value: AppPaymentEvent,
     SourceSystem.PAYMENT_PROCESSOR.value: ProcessorTransactionEvent,
     SourceSystem.BILLING_LEDGER.value: BillingLedgerEvent,
+    SourceSystem.PROCESSOR_SETTLEMENT.value: SettlementEvent,
 }

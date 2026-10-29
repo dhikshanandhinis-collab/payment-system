@@ -246,6 +246,35 @@ services:
       kafka-init:
         condition: service_completed_successfully
 
+  # Simulated processor settlement files dropped into an inbox (stands in for an SFTP drop).
+  settlement-producer:
+    <<: *app-image
+    command: ["python", "-m", "generators.settlement_files", "--loop"]
+    stop_grace_period: 60s  # the final iteration settles everything up to shutdown
+    environment:
+      <<: [*common-env, *sim-env]
+      SERVICE_NAME: settlement-producer
+      SETTLEMENT_INBOX: /data/settlement/inbox
+      SETTLEMENT_INTERVAL_S: ${SETTLEMENT_INTERVAL_S:-300}
+    volumes:
+      - settlement-files:/data/settlement
+
+  settlement-adapter:
+    <<: *app-image
+    command: ["python", "-m", "ingestion.settlement_adapter"]
+    environment:
+      <<: [*common-env, *kafka-env]
+      SERVICE_NAME: settlement-adapter
+      SETTLEMENT_INBOX: /data/settlement/inbox
+      SETTLEMENT_POLL_S: ${SETTLEMENT_POLL_S:-30}
+    volumes:
+      - settlement-files:/data/settlement
+    ports: ["127.0.0.1:9107:9100"]
+    healthcheck: *app-healthcheck
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
   batch-scheduler:
     <<: *app-image
     command: ["python", "-m", "batch.scheduler"]
@@ -329,5 +358,6 @@ services:
 volumes:
   kafka-data:
   postgres-data:
+  settlement-files:
   prometheus-data:
   grafana-data:

@@ -48,10 +48,23 @@ def business_date(ts: datetime, tz: ZoneInfo) -> date:
     return ts.astimezone(tz).date()
 
 
+def _settlement_values(result: ReconciliationResult) -> dict[str, Any]:
+    s = result.settlement
+    return {
+        "settlement_status": s.status,
+        "settlement_reason": s.reason,
+        "settled_net_amount": s.settled_net,
+        "settlement_fee_amount": s.fees,
+        "settlement_difference_amount": s.difference,
+    }
+
+
 def _material_change(case: dict[str, Any], result: ReconciliationResult, effective: str) -> bool:
     if case["reconciliation_status"] != effective or case["computed_status"] != result.status.value:
         return True
     if case["reason_code"] != result.reason_code or case["currency"] != result.currency:
+        return True
+    if any(case[k] != v for k, v in _settlement_values(result).items()):
         return True
     return any(case[f] != getattr(result, f) for f in AMOUNT_FIELDS)
 
@@ -123,6 +136,7 @@ def reconcile_payment(
             "evaluation_count": case["evaluation_count"] + 1,
         }
         values.update({f: getattr(result, f) for f in AMOUNT_FIELDS})
+        values.update(_settlement_values(result))
         repo.update_case(cur, case["reconciliation_case_id"], values)
 
         if material:

@@ -127,3 +127,15 @@ FROM gold_reconciliation_run_summary ORDER BY started_at DESC LIMIT 20;
 -- metric: audit trail for the most recently changed cases.
 SELECT payment_id, previous_status, new_status, reason_code, trigger_type, actor, rule_version, evaluated_at
 FROM reconciliation_history ORDER BY history_id DESC LIMIT 30;
+
+-- name: settlement_summary
+-- metric: processor payout per settlement date (gross credits/debits, fees, net) and open settlement problems.
+SELECT * FROM gold_settlement_summary ORDER BY settlement_date DESC, currency;
+
+-- name: settlement_exceptions
+-- metric: cases whose settlement-file lines are missing or disagree with the processor transactions.
+SELECT payment_id, business_date, reconciliation_status, settlement_status, settlement_reason,
+       processor_net_amount, settled_net_amount, settlement_fee_amount, settlement_difference_amount
+FROM reconciliation_cases
+WHERE settlement_status IN ('UNSETTLED', 'SETTLEMENT_MISMATCH')
+ORDER BY business_date DESC, payment_id LIMIT 50;

@@ -71,6 +71,9 @@ BATCH_RUNS = Counter("recon_batch_runs_total", "Batch reconciliation runs", ["ru
 PRODUCED = Counter("recon_simulator_events_produced_total", "Synthetic events produced", ["source_system", "kind"])
 PRODUCE_ERRORS = Counter("recon_simulator_produce_errors_total", "Synthetic events that failed delivery", ["source_system"])
 
+SETTLEMENT_FILES = Counter("recon_settlement_files_total", "Settlement files handled by the adapter", ["outcome"])
+SETTLEMENT_LINES = Counter("recon_settlement_lines_published_total", "Settlement lines published to Kafka")
+
 
 class HealthState:
     """Thread-safe liveness/readiness flags plus optional readiness probe."""

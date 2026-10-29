@@ -74,6 +74,26 @@ post a matching `CHARGEBACK_CREDIT`. A case with a chargeback is `MATCHED / CHAR
 `CHARGEBACK_REVERSED` once the dispute is won and re-credited). Refunds + reversals + net chargebacks
 exceeding the capture produce `CHARGEBACKS_EXCEED_CAPTURE`.
 
+**Settlement (cash) reconciliation** is a separate dimension reported on every case
+(`settlement_status`, `settled_net_amount`, `settlement_fee_amount`, `settlement_difference_amount`); it never
+changes the operational status. The processor's daily settlement file contains one line per settled
+transaction: `gross_amount`, `fee_amount` and `net_amount = sign x gross - fee` (credit for CAPTURE and
+CHARGEBACK_REVERSAL, debit for REFUND, REVERSAL and CHARGEBACK). Every effective processor money movement
+needs exactly one line with the same transaction id, type and gross amount:
+
+| settlement_status | Meaning |
+|---|---|
+| NOT_APPLICABLE | No money moved (decline, failed payment) and no lines |
+| PENDING | A line is still inside the `settlement` waiting period (business days), or a line arrived before its processor transaction |
+| SETTLED | Every money movement has exactly one matching line |
+| UNSETTLED | `SETTLEMENT_MISSING`: a line is missing after the waiting period |
+| SETTLEMENT_MISMATCH | `SETTLEMENT_AMOUNT_MISMATCH`, `SETTLEMENT_TYPE_MISMATCH`, `DUPLICATE_SETTLEMENT`, `UNEXPECTED_SETTLEMENT` (line for a non-financial or duplicate transaction), `SETTLED_TRANSACTION_UNKNOWN` (no such processor transaction) |
+
+Files are checked for integrity before anything is published (exact header, column count, `TRAILER` line
+count and net total); a failing file is moved to `rejected/` with an error report. Individual lines are
+validated by the normal ingestion pipeline, so one bad line is quarantined while the rest of the file is
+processed. See [ingestion/settlement_adapter.py](../ingestion/settlement_adapter.py).
+
 **No money movement.** The platform never initiates refunds, never posts to accounts and never
 contacts real systems; it only observes and reports.
 
@@ -99,7 +119,7 @@ summarized in `app_status` / `processor_outcome`; it is distinct from the reconc
 | DATA_QUALITY_ERROR | exception | Currency conflict, inconsistent app amounts, invalid or orphan references |
 | UNDER_REVIEW | manual | Operator review hold (engine keeps computing `computed_status`) |
 
-### Decision order (rule version 2026.11.1)
+### Decision order (rule version 2026.11.2)
 
 The engine ([processing/reconciliation_engine.py](../processing/reconciliation_engine.py)) recomputes the
 status from the full snapshot on every evaluation; the first matching rule wins:
@@ -171,7 +191,7 @@ Every status, reason or amount change appends a row to `reconciliation_history`.
 * `next_evaluation_at` - waiting-period deadline. The timeout sweeper re-queues due cases, so a case
   becomes an exception **only** when its waiting period expires and the counterpart is still missing.
 
-## 5. Waiting periods (rule version 2026.11.1)
+## 5. Waiting periods (rule version 2026.11.2)
 
 | Wait | Starts at | Default | Card | Online banking | PAD |
 |---|---|---|---|---|---|
@@ -180,6 +200,7 @@ Every status, reason or amount change appends a row to `reconciliation_history`.
 | billing_posting | capture event time | 300 s | 240 s | 600 s | 900 s |
 | refund_posting / reversal_posting | refund / reversal event time | 600 s | | | |
 | chargeback_posting | chargeback / chargeback reversal event time | 900 s | | | |
+| settlement | processor transaction event time (always business days) | 3600 s | | | |
 | orphan_reference | refund / reversal / chargeback event time | 600 s | | | |
 
 **Business-day calendar.** For bank-settled methods (`PRE_AUTHORIZED_DEBIT`, `ONLINE_BANKING`) waiting

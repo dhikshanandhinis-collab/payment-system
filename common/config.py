@@ -110,6 +110,7 @@ class TopicSettings(_Base):
     app_events: str = "mybell.payment.events"
     processor_events: str = "processor.transaction.events"
     ledger_events: str = "billing.ledger.events"
+    settlement_events: str = "processor.settlement.events"
     reconciliation_events: str = "payment.reconciliation.events"
     dlq: str = "payment.reconciliation.dlq"
     partitions: int = Field(default=6, ge=1, le=256)
@@ -125,11 +126,13 @@ class TopicSettings(_Base):
             self.app_events: "mybell_app",
             self.processor_events: "payment_processor",
             self.ledger_events: "billing_ledger",
+            self.settlement_events: "processor_settlement",
         }
 
     @model_validator(mode="after")
     def _check(self) -> TopicSettings:
-        names = [self.app_events, self.processor_events, self.ledger_events, self.reconciliation_events, self.dlq]
+        names = [self.app_events, self.processor_events, self.ledger_events, self.settlement_events,
+                 self.reconciliation_events, self.dlq]
         if len(set(names)) != len(names):
             raise ValueError("topic names must be distinct")
         if self.min_insync_replicas > self.replication_factor:
@@ -298,6 +301,8 @@ class SimulationSettings(_Base):
     reversal_rate: float = Field(default=0.01, ge=0, le=1)
     chargeback_rate: float = Field(default=0.004, ge=0, le=1)
     chargeback_reversal_share: float = Field(default=0.3, ge=0, le=1)
+    settlement_missing_rate: float = Field(default=0.003, ge=0, le=1)
+    settlement_amount_mismatch_rate: float = Field(default=0.002, ge=0, le=1)
     billing_charge_rate: float = Field(default=0.2, ge=0, le=1)
 
     delay_min_s: float = Field(default=5.0, ge=0)

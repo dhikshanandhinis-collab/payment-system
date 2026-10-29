@@ -6,8 +6,8 @@
 # Waiting periods are SYNTHETIC engineering defaults chosen so that the local demo surfaces exceptions
 # within minutes. They are NOT Bell service-level agreements; production values must come from the
 # business owners of each payment channel.
-rule_version: "2026.11.1"
-description: "Adds chargebacks/chargeback reversals and a bank business-day calendar for bank-settled methods."
+rule_version: "2026.11.2"
+description: "Adds chargebacks, settlement-file reconciliation with fees, and a bank business-day calendar."
 
 grace_periods_seconds:
   application_record: 300          # processor/ledger record seen, waiting for the app record
@@ -26,6 +26,7 @@ grace_periods_seconds:
   refund_posting: 600              # processor refund seen, waiting for REFUND_DEBIT
   reversal_posting: 600            # processor reversal seen, waiting for ledger REVERSAL
   chargeback_posting: 900          # chargeback (or its reversal) seen, waiting for CHARGEBACK_DEBIT/CREDIT
+  settlement: 3600                 # processor transaction seen, waiting for its settlement-file line (business days)
   orphan_reference: 600            # refund/reversal/chargeback references an unknown transaction
 
 # Waiting periods of bank-settled methods only elapse on bank business days: a pre-authorized debit

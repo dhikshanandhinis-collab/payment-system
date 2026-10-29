@@ -168,6 +168,7 @@ class _SourceBuilder:
         self.rng = _rng(settings, intent.index, source)
         self.topic = {APP: topics.app_events, PROCESSOR: topics.processor_events, LEDGER: topics.ledger_events}[source]
         self.events: list[ScheduledEvent] = []
+        self.originals: list[dict[str, Any]] = []  # payloads before fault injection (the source's own truth)
         self.seq = 0
         self.missing = False
 
@@ -178,6 +179,7 @@ class _SourceBuilder:
         return base
 
     def emit(self, payload: dict[str, Any], event_time: datetime, extra_delay: float = 0.0) -> None:
+        self.originals.append(payload)
         key = (payload.get("payment_id") or payload.get("account_ref") or "").encode() or None
         emit_at = event_time + timedelta(seconds=self.delay() + extra_delay)
         kind = "valid"

@@ -35,6 +35,7 @@ class _Grace(BaseModel):
     refund_posting: int = Field(ge=0)
     reversal_posting: int = Field(ge=0)
     chargeback_posting: int = Field(ge=0)
+    settlement: int = Field(ge=0)
     orphan_reference: int = Field(ge=0)
 
 
@@ -107,9 +108,9 @@ class BusinessCalendar:
     def is_business_day(self, day: date) -> bool:
         return day.weekday() not in self.non_business_weekdays and day not in self.holidays
 
-    def add(self, start: datetime, duration: timedelta, method: str | None) -> datetime:
+    def add(self, start: datetime, duration: timedelta, method: str | None, business_days: bool = False) -> datetime:
         """start + duration, counting only business-day time for business-day methods (DST-safe, in UTC)."""
-        if method not in self.business_day_methods:
+        if not business_days and method not in self.business_day_methods:
             return start + duration
         t, remaining = start.astimezone(UTC), duration
         while True:
@@ -136,6 +137,7 @@ class ReconciliationRules:
     refund_posting_grace: timedelta
     reversal_posting_grace: timedelta
     chargeback_posting_grace: timedelta
+    settlement_grace: timedelta
     orphan_reference_grace: timedelta
     calendar: BusinessCalendar
     timestamp_rules: TimestampRules
@@ -176,6 +178,7 @@ def rules_from_dict(data: dict[str, Any]) -> ReconciliationRules:
         refund_posting_grace=timedelta(seconds=g.refund_posting),
         reversal_posting_grace=timedelta(seconds=g.reversal_posting),
         chargeback_posting_grace=timedelta(seconds=g.chargeback_posting),
+        settlement_grace=timedelta(seconds=g.settlement),
         orphan_reference_grace=timedelta(seconds=g.orphan_reference),
         calendar=BusinessCalendar(
             tz=ZoneInfo(cal.timezone),

@@ -13,6 +13,7 @@ from processing.models import (
     BillingLedgerEvent,
     ProcessorEventType,
     ProcessorTransactionEvent,
+    SettlementEvent,
     SourceEvent,
 )
 
@@ -49,7 +50,7 @@ class NormalizedEvent:
     payment_request: dict[str, Any] | None = None
 
 
-def _common(event: SourceEvent) -> dict[str, Any]:
+def _common(event: AppPaymentEvent | ProcessorTransactionEvent | BillingLedgerEvent) -> dict[str, Any]:
     return {
         "source_event_id": event.event_id,
         "event_time": event.event_time,
@@ -161,6 +162,38 @@ def normalize(event: SourceEvent) -> NormalizedEvent:
             event_time=event.event_time,
             content_hash=content_hash,
             business_key=event.ledger_entry_id,
+            business_hash=business_hash,
+            rows=[row],
+        )
+
+    if isinstance(event, SettlementEvent):
+        row = SilverRow(
+            "settlement_records",
+            {
+                "settlement_id": event.settlement_id,
+                "source_event_id": event.event_id,
+                "settlement_batch_id": event.settlement_batch_id,
+                "settlement_date": event.settlement_date,
+                "processor_transaction_id": event.processor_transaction_id,
+                "payment_id": event.payment_id,
+                "transaction_type": event.transaction_type.value,
+                "gross_amount": event.gross_amount,
+                "fee_amount": event.fee_amount,
+                "net_amount": event.net_amount,
+                "currency": event.currency,
+                "event_time": event.event_time,
+                "correlation_id": event.correlation_id,
+                "schema_version": event.schema_version,
+            },
+        )
+        return NormalizedEvent(
+            source_system=event.source_system,
+            source_event_id=event.event_id,
+            event_type=event.event_type,
+            payment_id=event.payment_id,
+            event_time=event.event_time,
+            content_hash=content_hash,
+            business_key=event.settlement_id,
             business_hash=business_hash,
             rows=[row],
         )

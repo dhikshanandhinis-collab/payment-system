@@ -20,13 +20,14 @@ from processing.reconciliation_engine import (
     PaymentRequest,
     PaymentSnapshot,
     ProcessorRecord,
+    SettlementRecord,
 )
 from processing.rules import ReconciliationRules
 from processing.validation import EventMetadata
 
 SILVER_TABLES = frozenset(
     {"application_payment_events", "processor_transactions", "payment_refunds", "payment_reversals",
-     "payment_chargebacks", "billing_ledger_entries"}
+     "payment_chargebacks", "billing_ledger_entries", "settlement_records"}
 )
 
 
@@ -397,7 +398,17 @@ def load_snapshot(cur: Cursor, payment_id: str) -> PaymentSnapshot:
         )
         foreign = tuple(ProcessorRecord(*row) for row in cur.fetchall())
 
-    return PaymentSnapshot(payment_id, request, app_events, processor, ledger, foreign)
+    cur.execute(
+        """
+        SELECT settlement_id, processor_transaction_id, transaction_type, gross_amount, fee_amount, net_amount,
+               currency, settlement_date, event_time
+        FROM settlement_records WHERE payment_id = %s ORDER BY settlement_date, settlement_id
+        """,
+        (payment_id,),
+    )
+    settlements = tuple(SettlementRecord(*row) for row in cur.fetchall())
+
+    return PaymentSnapshot(payment_id, request, app_events, processor, ledger, foreign, settlements)
 
 
 # ---------------------------------------------------------------- Rules

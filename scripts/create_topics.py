@@ -28,7 +28,8 @@ def topic_specs(topics: TopicSettings) -> list[NewTopic]:
         "cleanup.policy": "delete",
     }
     specs = []
-    for name in (topics.app_events, topics.processor_events, topics.ledger_events, topics.reconciliation_events):
+    for name in (topics.app_events, topics.processor_events, topics.ledger_events, topics.settlement_events,
+                 topics.reconciliation_events):
         specs.append(
             NewTopic(name, num_partitions=topics.partitions, replication_factor=topics.replication_factor,
                      config={**common, "retention.ms": str(topics.retention_ms)})

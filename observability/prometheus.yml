@@ -17,3 +17,5 @@ scrape_configs:
         labels: {service: billing-producer}
       - targets: ["batch-scheduler:9100"]
         labels: {service: batch-scheduler}
+      - targets: ["settlement-adapter:9100"]
+        labels: {service: settlement-adapter}

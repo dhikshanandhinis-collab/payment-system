@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -85,6 +85,31 @@ class LedgerRecord:
 
 
 @dataclass(frozen=True)
+class SettlementRecord:
+    settlement_id: str
+    processor_transaction_id: str
+    transaction_type: str
+    gross_amount: Decimal
+    fee_amount: Decimal
+    net_amount: Decimal
+    currency: str
+    settlement_date: date
+    event_time: datetime
+
+
+@dataclass(frozen=True)
+class SettlementOutcome:
+    """Cash (settlement-file) reconciliation, reported alongside the operational status."""
+
+    status: str  # NOT_APPLICABLE | PENDING | SETTLED | UNSETTLED | SETTLEMENT_MISMATCH
+    reason: str | None = None
+    settled_net: Decimal = ZERO
+    fees: Decimal = ZERO
+    difference: Decimal = ZERO
+    next_eval: datetime | None = None
+
+
+@dataclass(frozen=True)
 class PaymentSnapshot:
     payment_id: str
     request: PaymentRequest | None = None
@@ -93,10 +118,12 @@ class PaymentSnapshot:
     ledger_records: tuple[LedgerRecord, ...] = ()
     # Processor transactions referenced by this payment's refunds/reversals that belong to *other* payments.
     foreign_references: tuple[ProcessorRecord, ...] = ()
+    settlements: tuple[SettlementRecord, ...] = ()
 
     @property
     def is_empty(self) -> bool:
-        return not (self.request or self.app_events or self.processor_records or self.ledger_records)
+        return not (self.request or self.app_events or self.processor_records or self.ledger_records
+                    or self.settlements)
 
 
 @dataclass(frozen=True)
@@ -121,6 +148,7 @@ class ReconciliationResult:
     next_evaluation_at: datetime | None
     source_refs: dict[str, list[str]]
     chargeback_amount: Decimal = ZERO
+    settlement: SettlementOutcome = field(default_factory=lambda: SettlementOutcome("NOT_APPLICABLE"))
     findings: tuple[str, ...] = field(default_factory=tuple)
 
     def amounts(self) -> dict[str, Any]:
@@ -137,6 +165,10 @@ class ReconciliationResult:
             "billing_amount": s(self.billing_amount),
             "billing_pending_amount": s(self.billing_pending_amount),
             "difference_amount": s(self.difference_amount),
+            "settlement_status": self.settlement.status,
+            "settled_net_amount": s(self.settlement.settled_net),
+            "settlement_fee_amount": s(self.settlement.fees),
+            "settlement_difference_amount": s(self.settlement.difference),
             "currency": self.currency,
         }
 
@@ -215,6 +247,12 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
     net_chargeback = _sum(valid_chargebacks) - _sum(valid_cb_reversals)
 
     net = gross - refunded - reversed_ - net_chargeback
+    settlement = _settle(
+        snapshot,
+        captures + valid_refunds + list(effective_reversals.values()) + valid_chargebacks + valid_cb_reversals,
+        now,
+        rules,
+    )
 
     if captures:
         processor_outcome = "CAPTURED"
@@ -249,7 +287,7 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
     # ---------- reference time / identity ----------
     all_times = [e.event_time for e in snapshot.app_events] + [p.event_time for p in proc] + [
         e.event_time for e in snapshot.ledger_records
-    ]
+    ] + [s.event_time for s in snapshot.settlements]
     if req is not None:
         all_times.append(req.initiated_at)
     reference_time = req.initiated_at if req is not None else min(all_times)
@@ -259,7 +297,9 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
 
     currencies = (
         {req.currency} if req else set()
-    ) | {e.currency for e in snapshot.app_events} | {p.currency for p in proc} | {e.currency for e in financial}
+    ) | {e.currency for e in snapshot.app_events} | {p.currency for p in proc} | {e.currency for e in financial} | {
+        s.currency for s in snapshot.settlements
+    }
     currency = req.currency if req is not None else (sorted(currencies)[0] if currencies else None)
 
     source_refs = {
@@ -433,9 +473,69 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
             billing_pending_amount=billing_pending,
             difference_amount=decision.difference,
             reference_time=reference_time,
-            next_evaluation_at=decision.next_eval,
+            next_evaluation_at=min(
+                (t for t in (decision.next_eval, settlement.next_eval) if t is not None), default=None
+            ),
             source_refs=source_refs,
             chargeback_amount=net_chargeback,
+            settlement=settlement,
             findings=tuple(findings),
         )
     raise AssertionError("unreachable: every path produces a decision")  # pragma: no cover
+
+
+_SETTLEMENT_SIGN = {"CAPTURE": 1, "CHARGEBACK_REVERSAL": 1, "REFUND": -1, "REVERSAL": -1, "CHARGEBACK": -1}
+
+
+def _settle(
+    snapshot: PaymentSnapshot, expected: list[ProcessorRecord], now: datetime, rules: ReconciliationRules
+) -> SettlementOutcome:
+    """Every effective processor money movement needs exactly one settlement line with the same gross amount.
+
+    Settlement waits always elapse on bank business days (settlement files are produced on banking days).
+    """
+    lines = snapshot.settlements
+    if not expected and not lines:
+        return SettlementOutcome("NOT_APPLICABLE")
+    fees = money_sum(line.fee_amount for line in lines)
+    settled_net = money_sum(line.net_amount for line in lines)
+
+    def outcome(
+        status: str, reason: str | None, difference: Decimal = ZERO, next_eval: datetime | None = None
+    ) -> SettlementOutcome:
+        return SettlementOutcome(status, reason, settled_net, fees, difference, next_eval)
+
+    known = {p.transaction_id for p in snapshot.processor_records}
+    unknown = [line for line in lines if line.processor_transaction_id not in known]
+    if unknown:
+        due = min(line.event_time + rules.orphan_reference_grace for line in unknown)
+        if now < due:
+            return outcome("PENDING", "AWAITING_PROCESSOR_TRANSACTION", next_eval=due)
+        return outcome("SETTLEMENT_MISMATCH", "SETTLED_TRANSACTION_UNKNOWN", money_sum(line.net_amount for line in unknown))
+
+    by_txn: dict[str, list[SettlementRecord]] = {}
+    for line in lines:
+        by_txn.setdefault(line.processor_transaction_id, []).append(line)
+    expected_ids = {item.transaction_id for item in expected}
+    unexpected = [line for line in lines if line.processor_transaction_id not in expected_ids]
+    if unexpected:
+        return outcome("SETTLEMENT_MISMATCH", "UNEXPECTED_SETTLEMENT", money_sum(line.net_amount for line in unexpected))
+
+    missing: list[ProcessorRecord] = []
+    for item in expected:
+        found = by_txn.get(item.transaction_id, [])
+        if not found:
+            missing.append(item)
+        elif len(found) > 1:
+            return outcome("SETTLEMENT_MISMATCH", "DUPLICATE_SETTLEMENT", money_sum(f.gross_amount for f in found[1:]))
+        elif found[0].transaction_type != item.kind:
+            return outcome("SETTLEMENT_MISMATCH", "SETTLEMENT_TYPE_MISMATCH")
+        elif found[0].gross_amount != item.amount:
+            return outcome("SETTLEMENT_MISMATCH", "SETTLEMENT_AMOUNT_MISMATCH", found[0].gross_amount - item.amount)
+    if missing:
+        dues = [rules.calendar.add(item.event_time, rules.settlement_grace, None, business_days=True) for item in missing]
+        if all(now < d for d in dues):
+            return outcome("PENDING", "AWAITING_SETTLEMENT", next_eval=min(dues))
+        return outcome("UNSETTLED", "SETTLEMENT_MISSING",
+                       -money_sum(_SETTLEMENT_SIGN[item.kind] * item.amount for item in missing))
+    return outcome("SETTLED", None)

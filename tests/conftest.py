@@ -71,6 +71,7 @@ def create_test_topics() -> TopicSettings:
         app_events=f"it-{suffix}.mybell.payment.events",
         processor_events=f"it-{suffix}.processor.transaction.events",
         ledger_events=f"it-{suffix}.billing.ledger.events",
+        settlement_events=f"it-{suffix}.processor.settlement.events",
         reconciliation_events=f"it-{suffix}.payment.reconciliation.events",
         dlq=f"it-{suffix}.payment.reconciliation.dlq",
         partitions=3,

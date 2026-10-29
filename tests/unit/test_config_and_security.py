@@ -51,7 +51,7 @@ def test_env_overrides(monkeypatch):
 
 
 def test_rules_loaded_and_versioned(rules):
-    assert rules.rule_version == "2026.11.1"
+    assert rules.rule_version == "2026.11.2"
     assert rules.calendar.business_day_methods == {"PRE_AUTHORIZED_DEBIT", "ONLINE_BANKING"}
     assert rules.processor_grace("PRE_AUTHORIZED_DEBIT") > rules.processor_grace("CREDIT_CARD")
     assert rules.processor_grace("UNKNOWN_METHOD") == rules.processor_grace_default
