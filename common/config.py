@@ -296,6 +296,8 @@ class SimulationSettings(_Base):
     refund_rate: float = Field(default=0.03, ge=0, le=1)
     partial_refund_share: float = Field(default=0.6, ge=0, le=1)
     reversal_rate: float = Field(default=0.01, ge=0, le=1)
+    chargeback_rate: float = Field(default=0.004, ge=0, le=1)
+    chargeback_reversal_share: float = Field(default=0.3, ge=0, le=1)
     billing_charge_rate: float = Field(default=0.2, ge=0, le=1)
 
     delay_min_s: float = Field(default=5.0, ge=0)

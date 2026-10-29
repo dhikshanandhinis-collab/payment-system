@@ -58,6 +58,8 @@ class ProcessorEventType(StrEnum):
     DECLINE = "DECLINE"
     REVERSAL = "REVERSAL"
     REFUND = "REFUND"
+    CHARGEBACK = "CHARGEBACK"
+    CHARGEBACK_REVERSAL = "CHARGEBACK_REVERSAL"
 
 
 class ProcessorStatus(StrEnum):
@@ -66,6 +68,8 @@ class ProcessorStatus(StrEnum):
     DECLINED = "DECLINED"
     REVERSED = "REVERSED"
     REFUNDED = "REFUNDED"
+    CHARGED_BACK = "CHARGED_BACK"
+    CHARGEBACK_REVERSED = "CHARGEBACK_REVERSED"
 
 
 class LedgerEntryType(StrEnum):
@@ -75,6 +79,8 @@ class LedgerEntryType(StrEnum):
     REFUND_DEBIT = "REFUND_DEBIT"
     REVERSAL = "REVERSAL"
     ADJUSTMENT = "ADJUSTMENT"
+    CHARGEBACK_DEBIT = "CHARGEBACK_DEBIT"
+    CHARGEBACK_CREDIT = "CHARGEBACK_CREDIT"
 
 
 class PostingStatus(StrEnum):
@@ -102,13 +108,28 @@ PROCESSOR_STATUS_BY_EVENT: dict[ProcessorEventType, ProcessorStatus] = {
     ProcessorEventType.DECLINE: ProcessorStatus.DECLINED,
     ProcessorEventType.REVERSAL: ProcessorStatus.REVERSED,
     ProcessorEventType.REFUND: ProcessorStatus.REFUNDED,
+    ProcessorEventType.CHARGEBACK: ProcessorStatus.CHARGED_BACK,
+    ProcessorEventType.CHARGEBACK_REVERSAL: ProcessorStatus.CHARGEBACK_REVERSED,
 }
+
+# Processor events that adjust an earlier transaction and must reference it.
+REFERENCING_PROCESSOR_EVENTS = frozenset({
+    ProcessorEventType.REFUND, ProcessorEventType.REVERSAL,
+    ProcessorEventType.CHARGEBACK, ProcessorEventType.CHARGEBACK_REVERSAL,
+})
 
 LEDGER_FIXED_DIRECTION: dict[LedgerEntryType, Direction] = {
     LedgerEntryType.CHARGE: Direction.DEBIT,
     LedgerEntryType.PAYMENT_CREDIT: Direction.CREDIT,
     LedgerEntryType.REFUND_DEBIT: Direction.DEBIT,
+    LedgerEntryType.CHARGEBACK_DEBIT: Direction.DEBIT,
+    LedgerEntryType.CHARGEBACK_CREDIT: Direction.CREDIT,
 }
+
+# Ledger entries that mirror a processor transaction and must name it in processor_reference.
+PROCESSOR_REFERENCED_LEDGER_ENTRIES = frozenset({
+    LedgerEntryType.REFUND_DEBIT, LedgerEntryType.CHARGEBACK_DEBIT, LedgerEntryType.CHARGEBACK_CREDIT,
+})
 
 
 class _Envelope(BaseModel):
@@ -182,7 +203,7 @@ class ProcessorTransactionEvent(_Envelope, _Monetary):
             raise ValueError(
                 f"processor_status {self.processor_status} is inconsistent with event_type {self.event_type}"
             )
-        needs_original = self.event_type in (ProcessorEventType.REFUND, ProcessorEventType.REVERSAL)
+        needs_original = self.event_type in REFERENCING_PROCESSOR_EVENTS
         forbids_original = self.event_type in (ProcessorEventType.AUTHORIZATION, ProcessorEventType.DECLINE)
         if needs_original and not self.original_processor_transaction_id:
             raise ValueError(f"{self.event_type} requires original_processor_transaction_id")
@@ -217,8 +238,8 @@ class BillingLedgerEvent(_Envelope, _Monetary):
                 raise ValueError(f"{self.event_type} requires original_ledger_entry_id")
         if self.event_type is LedgerEntryType.POSTING_CONFIRMATION and self.posting_status is not PostingStatus.POSTED:
             raise ValueError("POSTING_CONFIRMATION must have posting_status POSTED")
-        if self.event_type is LedgerEntryType.REFUND_DEBIT and not self.processor_reference:
-            raise ValueError("REFUND_DEBIT requires processor_reference (the processor refund id)")
+        if self.event_type in PROCESSOR_REFERENCED_LEDGER_ENTRIES and not self.processor_reference:
+            raise ValueError(f"{self.event_type} requires processor_reference (the processor transaction id)")
         if self.event_type is LedgerEntryType.ADJUSTMENT and not self.adjustment_reason:
             raise ValueError("ADJUSTMENT requires adjustment_reason")
         if self.original_ledger_entry_id == self.ledger_entry_id:

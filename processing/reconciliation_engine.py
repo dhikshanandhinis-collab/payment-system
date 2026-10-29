@@ -12,10 +12,13 @@ Financial model (all amounts are positive magnitudes, Decimal only):
   gross_captured   = sum of distinct CAPTURE transactions
   total_refunded   = sum of distinct REFUNDs referencing a capture of this payment
   total_reversed   = sum of the first REVERSAL per capture (a processor reversal cancels a capture)
-  net_captured     = gross_captured - total_refunded - total_reversed
+  net_chargeback   = CHARGEBACKs referencing a capture - CHARGEBACK_REVERSALs referencing those chargebacks
+  net_captured     = gross_captured - total_refunded - total_reversed - net_chargeback
   billing_amount   = signed sum of *effective* ledger entries for the payment
                      (CREDIT +, DEBIT -). An entry is effective when posting_status is POSTED or a
                      POSTING_CONFIRMATION references it; PENDING and REJECTED entries are excluded.
+
+Waiting periods of bank-settled payment methods elapse on business days only (rules calendar).
 """
 
 from __future__ import annotations
@@ -56,11 +59,11 @@ class AppEvent:
 
 @dataclass(frozen=True)
 class ProcessorRecord:
-    """Processor transaction, refund or reversal (``kind`` distinguishes them)."""
+    """Processor transaction, refund, reversal or chargeback (``kind`` distinguishes them)."""
 
     transaction_id: str
     payment_id: str
-    kind: str  # AUTHORIZATION | CAPTURE | DECLINE | REFUND | REVERSAL
+    kind: str  # AUTHORIZATION | CAPTURE | DECLINE | REFUND | REVERSAL | CHARGEBACK | CHARGEBACK_REVERSAL
     original_transaction_id: str | None
     amount: Decimal
     currency: str
@@ -117,6 +120,7 @@ class ReconciliationResult:
     reference_time: datetime
     next_evaluation_at: datetime | None
     source_refs: dict[str, list[str]]
+    chargeback_amount: Decimal = ZERO
     findings: tuple[str, ...] = field(default_factory=tuple)
 
     def amounts(self) -> dict[str, Any]:
@@ -128,6 +132,7 @@ class ReconciliationResult:
             "processor_amount": s(self.processor_amount),
             "refunded_amount": s(self.refunded_amount),
             "reversed_amount": s(self.reversed_amount),
+            "chargeback_amount": s(self.chargeback_amount),
             "processor_net_amount": s(self.processor_net_amount),
             "billing_amount": s(self.billing_amount),
             "billing_pending_amount": s(self.billing_pending_amount),
@@ -197,7 +202,19 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
     gross = _sum(captures)
     refunded = _sum(valid_refunds)
     reversed_ = _sum(effective_reversals.values())
-    net = gross - refunded - reversed_
+
+    chargebacks = sorted((p for p in proc if p.kind == "CHARGEBACK"), key=lambda p: (p.event_time, p.transaction_id))
+    chargeback_reversals = sorted(
+        (p for p in proc if p.kind == "CHARGEBACK_REVERSAL"), key=lambda p: (p.event_time, p.transaction_id)
+    )
+    valid_chargebacks = [c for c in chargebacks if c.original_transaction_id in capture_ids]
+    orphan_chargebacks = [c for c in chargebacks if c.original_transaction_id not in capture_ids]
+    chargeback_ids = {c.transaction_id for c in valid_chargebacks}
+    valid_cb_reversals = [r for r in chargeback_reversals if r.original_transaction_id in chargeback_ids]
+    orphan_cb_reversals = [r for r in chargeback_reversals if r.original_transaction_id not in chargeback_ids]
+    net_chargeback = _sum(valid_chargebacks) - _sum(valid_cb_reversals)
+
+    net = gross - refunded - reversed_ - net_chargeback
 
     if captures:
         processor_outcome = "CAPTURED"
@@ -247,14 +264,17 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
 
     source_refs = {
         "application_event_ids": sorted(e.source_event_id for e in snapshot.app_events),
-        "processor_transaction_ids": sorted(p.transaction_id for p in proc if p.kind not in ("REFUND", "REVERSAL")),
+        "processor_transaction_ids": sorted(
+            p.transaction_id for p in proc if p.kind not in ("REFUND", "REVERSAL", "CHARGEBACK", "CHARGEBACK_REVERSAL")
+        ),
         "refund_ids": sorted(r.transaction_id for r in refunds),
         "reversal_ids": sorted(r.transaction_id for r in reversals),
+        "chargeback_ids": sorted(c.transaction_id for c in chargebacks + chargeback_reversals),
         "ledger_entry_ids": sorted(e.ledger_entry_id for e in ledger),
     }
 
     def deadline(start: datetime, grace: timedelta) -> datetime:
-        return start + grace
+        return rules.calendar.add(start, grace, method)
 
     try:
         # 1. Data quality problems that make any financial conclusion unsafe.
@@ -264,13 +284,13 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
             conflicting = [e for e in snapshot.app_events if e.amount != req.amount]
             if conflicting:
                 raise _Decision(S.DATA_QUALITY_ERROR, "APP_AMOUNT_CONFLICT", conflicting[0].amount - req.amount)
-        for ref in refunds + reversals:
+        for ref in refunds + reversals + chargebacks + chargeback_reversals:
             target = ref.original_transaction_id or ""
             if target in foreign:
                 raise _Decision(S.DATA_QUALITY_ERROR, "REFERENCE_PAYMENT_MISMATCH")
-            if target in own_ids and own_ids[target].kind != "CAPTURE":
-                code = "INVALID_REFUND_TARGET" if ref.kind == "REFUND" else "INVALID_REVERSAL_TARGET"
-                raise _Decision(S.DATA_QUALITY_ERROR, code)
+            expected_kind = "CHARGEBACK" if ref.kind == "CHARGEBACK_REVERSAL" else "CAPTURE"
+            if target in own_ids and own_ids[target].kind != expected_kind:
+                raise _Decision(S.DATA_QUALITY_ERROR, f"INVALID_{ref.kind}_TARGET")
 
         # 2. Duplicate financial effects (distinct identifiers carrying the same economic event).
         if len(captures) > 1:
@@ -320,17 +340,22 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
             raise _Decision(S.STATUS_MISMATCH, "APP_FAILED_BUT_CAPTURED", gross)
         if app_status in ("UNKNOWN", "INITIATED"):
             findings.append("APP_OUTCOME_RESOLVED_BY_PROCESSOR")
-        if refunded + reversed_ > gross:
-            raise _Decision(S.AMOUNT_MISMATCH, "REFUNDS_EXCEED_CAPTURE", gross - refunded - reversed_)
+        if refunded + reversed_ + net_chargeback > gross:
+            reason = "CHARGEBACKS_EXCEED_CAPTURE" if net_chargeback > ZERO else "REFUNDS_EXCEED_CAPTURE"
+            raise _Decision(S.AMOUNT_MISMATCH, reason, gross - refunded - reversed_ - net_chargeback)
 
-        # 6. Refund/reversal references that are not (yet) resolvable.
-        orphans = orphan_refunds + orphan_reversals
+        # 6. Refund/reversal/chargeback references that are not (yet) resolvable.
+        orphan_groups = (
+            (orphan_refunds, S.REFUND_PENDING, "ORPHAN_REFUND_REFERENCE"),
+            (orphan_reversals, S.REVERSAL_PENDING, "ORPHAN_REVERSAL_REFERENCE"),
+            (orphan_chargebacks + orphan_cb_reversals, S.CHARGEBACK_PENDING, "ORPHAN_CHARGEBACK_REFERENCE"),
+        )
+        orphans = [o for group, _, _ in orphan_groups for o in group]
         if orphans:
+            pending_status, code = next((status, c) for group, status, c in orphan_groups if group)
             due = min(deadline(o.event_time, rules.orphan_reference_grace) for o in orphans)
             if now < due:
-                pending_status = S.REFUND_PENDING if orphan_refunds else S.REVERSAL_PENDING
                 raise _Decision(pending_status, "AWAITING_ORIGINAL_TRANSACTION", next_eval=due)
-            code = "ORPHAN_REFUND_REFERENCE" if orphan_refunds else "ORPHAN_REVERSAL_REFERENCE"
             raise _Decision(S.DATA_QUALITY_ERROR, code, -_sum(orphans))
 
         # 7. Processor vs billing ledger.
@@ -365,12 +390,21 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
         counterpart_check(
             list(effective_reversals.values()), "REVERSAL", rules.reversal_posting_grace, S.REVERSAL_PENDING, "REVERSAL"
         )
+        counterpart_check(
+            valid_chargebacks, "CHARGEBACK_DEBIT", rules.chargeback_posting_grace, S.CHARGEBACK_PENDING, "CHARGEBACK"
+        )
+        counterpart_check(
+            valid_cb_reversals, "CHARGEBACK_CREDIT", rules.chargeback_posting_grace, S.CHARGEBACK_PENDING,
+            "CHARGEBACK_REVERSAL",
+        )
 
         if billing_amount != net:
             raise _Decision(S.AMOUNT_MISMATCH, "PROCESSOR_LEDGER_AMOUNT_MISMATCH", billing_amount - net)
 
         if effective_reversals:
             reason = "REVERSED"
+        elif valid_chargebacks:
+            reason = "CHARGEBACK_REVERSED" if net_chargeback == ZERO else "CHARGED_BACK"
         elif valid_refunds and net == ZERO:
             reason = "FULLY_REFUNDED"
         elif valid_refunds:
@@ -401,6 +435,7 @@ def evaluate(snapshot: PaymentSnapshot, now: datetime, rules: ReconciliationRule
             reference_time=reference_time,
             next_evaluation_at=decision.next_eval,
             source_refs=source_refs,
+            chargeback_amount=net_chargeback,
             findings=tuple(findings),
         )
     raise AssertionError("unreachable: every path produces a decision")  # pragma: no cover

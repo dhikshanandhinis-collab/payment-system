@@ -111,6 +111,11 @@ def normalize(event: SourceEvent) -> NormalizedEvent:
             row = SilverRow("payment_refunds", {**base, "refund_id": event.processor_transaction_id})
         elif event.event_type is ProcessorEventType.REVERSAL:
             row = SilverRow("payment_reversals", {**base, "reversal_id": event.processor_transaction_id})
+        elif event.event_type in (ProcessorEventType.CHARGEBACK, ProcessorEventType.CHARGEBACK_REVERSAL):
+            row = SilverRow(
+                "payment_chargebacks",
+                {**base, "chargeback_id": event.processor_transaction_id, "chargeback_type": event.event_type.value},
+            )
         else:
             row = SilverRow(
                 "processor_transactions",

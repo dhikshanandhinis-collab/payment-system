@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -33,7 +34,32 @@ class _Grace(BaseModel):
     billing_posting: _MethodGrace
     refund_posting: int = Field(ge=0)
     reversal_posting: int = Field(ge=0)
+    chargeback_posting: int = Field(ge=0)
     orphan_reference: int = Field(ge=0)
+
+
+class _Calendar(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    timezone: str
+    non_business_weekdays: list[int] = Field(default_factory=lambda: [5, 6])  # Monday = 0
+    holidays: list[date] = Field(default_factory=list)
+    business_day_methods: list[PaymentMethod] = Field(default_factory=list)
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone {value!r}") from exc
+        return value
+
+    @field_validator("non_business_weekdays")
+    @classmethod
+    def _weekdays(cls, value: list[int]) -> list[int]:
+        if any(d < 0 or d > 6 for d in value) or len(set(value)) >= 7:
+            raise ValueError("non_business_weekdays must be 0-6 and leave at least one business day")
+        return sorted(set(value))
 
 
 class _TimestampRules(BaseModel):
@@ -56,6 +82,7 @@ class _RulesFile(BaseModel):
     rule_version: str = Field(min_length=1, max_length=40)
     description: str
     grace_periods_seconds: _Grace
+    business_calendar: _Calendar
     timestamp_rules: _TimestampRules
     late_event_threshold_seconds: int = Field(ge=0)
     data_quality_thresholds: _Thresholds
@@ -69,6 +96,35 @@ class _RulesFile(BaseModel):
 
 
 @dataclass(frozen=True)
+class BusinessCalendar:
+    """Bank processing days. Waiting periods of bank-settled methods only elapse on business days."""
+
+    tz: ZoneInfo
+    non_business_weekdays: frozenset[int]
+    holidays: frozenset[date]
+    business_day_methods: frozenset[str]
+
+    def is_business_day(self, day: date) -> bool:
+        return day.weekday() not in self.non_business_weekdays and day not in self.holidays
+
+    def add(self, start: datetime, duration: timedelta, method: str | None) -> datetime:
+        """start + duration, counting only business-day time for business-day methods (DST-safe, in UTC)."""
+        if method not in self.business_day_methods:
+            return start + duration
+        t, remaining = start.astimezone(UTC), duration
+        while True:
+            local_day = t.astimezone(self.tz).date()
+            next_midnight = datetime.combine(local_day + timedelta(days=1), time.min, tzinfo=self.tz).astimezone(UTC)
+            if not self.is_business_day(local_day):
+                t = next_midnight
+                continue
+            if t + remaining <= next_midnight:
+                return (t + remaining).astimezone(start.tzinfo)
+            remaining -= next_midnight - t
+            t = next_midnight
+
+
+@dataclass(frozen=True)
 class ReconciliationRules:
     rule_version: str
     description: str
@@ -79,7 +135,9 @@ class ReconciliationRules:
     billing_grace_by_method: dict[str, timedelta]
     refund_posting_grace: timedelta
     reversal_posting_grace: timedelta
+    chargeback_posting_grace: timedelta
     orphan_reference_grace: timedelta
+    calendar: BusinessCalendar
     timestamp_rules: TimestampRules
     late_event_threshold: timedelta
     dq_thresholds: dict[str, Decimal]
@@ -106,6 +164,7 @@ def rules_from_dict(data: dict[str, Any]) -> ReconciliationRules:
     parsed = _RulesFile.model_validate(data)
     canonical = json.dumps(parsed.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     g = parsed.grace_periods_seconds
+    cal = parsed.business_calendar
     return ReconciliationRules(
         rule_version=parsed.rule_version,
         description=parsed.description,
@@ -116,7 +175,14 @@ def rules_from_dict(data: dict[str, Any]) -> ReconciliationRules:
         billing_grace_by_method=_by_method(g.billing_posting),
         refund_posting_grace=timedelta(seconds=g.refund_posting),
         reversal_posting_grace=timedelta(seconds=g.reversal_posting),
+        chargeback_posting_grace=timedelta(seconds=g.chargeback_posting),
         orphan_reference_grace=timedelta(seconds=g.orphan_reference),
+        calendar=BusinessCalendar(
+            tz=ZoneInfo(cal.timezone),
+            non_business_weekdays=frozenset(cal.non_business_weekdays),
+            holidays=frozenset(cal.holidays),
+            business_day_methods=frozenset(m.value for m in cal.business_day_methods),
+        ),
         timestamp_rules=TimestampRules(
             max_future_skew_s=parsed.timestamp_rules.max_future_skew_seconds,
             max_age_days=parsed.timestamp_rules.max_age_days,

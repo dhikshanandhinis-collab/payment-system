@@ -73,7 +73,7 @@ def proc(
     event_id: str | None = None,
 ) -> dict[str, Any]:
     status = {"AUTHORIZATION": "AUTHORIZED", "CAPTURE": "CAPTURED", "DECLINE": "DECLINED", "REVERSAL": "REVERSED",
-              "REFUND": "REFUNDED"}[event_type]
+              "REFUND": "REFUNDED", "CHARGEBACK": "CHARGED_BACK", "CHARGEBACK_REVERSAL": "CHARGEBACK_REVERSED"}[event_type]
     payload = {
         "event_id": event_id or _eid(),
         "event_type": event_type,
@@ -108,7 +108,8 @@ def ledger(
     event_id: str | None = None,
 ) -> dict[str, Any]:
     default_direction = {"CHARGE": "DEBIT", "PAYMENT_CREDIT": "CREDIT", "REFUND_DEBIT": "DEBIT",
-                         "POSTING_CONFIRMATION": "CREDIT", "REVERSAL": "DEBIT", "ADJUSTMENT": "CREDIT"}[event_type]
+                         "POSTING_CONFIRMATION": "CREDIT", "REVERSAL": "DEBIT", "ADJUSTMENT": "CREDIT",
+                         "CHARGEBACK_DEBIT": "DEBIT", "CHARGEBACK_CREDIT": "CREDIT"}[event_type]
     payload: dict[str, Any] = {
         "event_id": event_id or _eid(),
         "event_type": event_type,

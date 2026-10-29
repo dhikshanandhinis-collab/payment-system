@@ -51,6 +51,7 @@ PAYMENTS_IN_WINDOW = """
     UNION SELECT payment_id FROM processor_transactions WHERE event_time >= %(s)s AND event_time < %(e)s
     UNION SELECT payment_id FROM payment_refunds WHERE event_time >= %(s)s AND event_time < %(e)s
     UNION SELECT payment_id FROM payment_reversals WHERE event_time >= %(s)s AND event_time < %(e)s
+    UNION SELECT payment_id FROM payment_chargebacks WHERE event_time >= %(s)s AND event_time < %(e)s
     UNION SELECT payment_id FROM billing_ledger_entries
           WHERE payment_id IS NOT NULL AND event_time >= %(s)s AND event_time < %(e)s
     UNION SELECT payment_id FROM reconciliation_cases WHERE business_date = %(d)s

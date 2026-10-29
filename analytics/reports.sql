@@ -62,7 +62,7 @@ SELECT c.payment_method, c.reconciliation_status, count(*) AS exceptions,
        round(count(*)::numeric / nullif((SELECT count(*) FROM reconciliation_cases x
             WHERE x.payment_method IS NOT DISTINCT FROM c.payment_method), 0), 4) AS exception_rate
 FROM reconciliation_cases c
-WHERE c.reconciliation_status NOT IN ('MATCHED', 'NO_FINANCIAL_EFFECT', 'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING')
+WHERE c.reconciliation_status NOT IN ('MATCHED', 'NO_FINANCIAL_EFFECT', 'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING', 'CHARGEBACK_PENDING')
 GROUP BY 1, 2 ORDER BY 3 DESC;
 
 -- name: duplicate_delivery_rates

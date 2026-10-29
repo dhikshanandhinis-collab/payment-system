@@ -41,12 +41,12 @@ SELECT
     coalesce(sum(c.processor_net_amount) FILTER (WHERE c.reconciliation_status = 'MATCHED'), 0)
                                                                                 AS matched_net_amount,
     count(*) FILTER (WHERE c.reconciliation_status = 'NO_FINANCIAL_EFFECT')     AS no_financial_effect_payments,
-    count(*) FILTER (WHERE c.reconciliation_status IN ('PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING'))
+    count(*) FILTER (WHERE c.reconciliation_status IN ('PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING', 'CHARGEBACK_PENDING'))
                                                                                 AS pending_payments,
     count(*) FILTER (WHERE c.reconciliation_status NOT IN ('MATCHED', 'NO_FINANCIAL_EFFECT',
-        'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING'))                AS unmatched_payments,
+        'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING', 'CHARGEBACK_PENDING'))                AS unmatched_payments,
     coalesce(sum(coalesce(c.expected_amount, c.processor_amount)) FILTER (WHERE c.reconciliation_status NOT IN
-        ('MATCHED', 'NO_FINANCIAL_EFFECT', 'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING')), 0)
+        ('MATCHED', 'NO_FINANCIAL_EFFECT', 'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING', 'CHARGEBACK_PENDING')), 0)
                                                                                 AS unmatched_amount,
     coalesce(sum(abs(c.difference_amount)), 0)                                  AS absolute_difference_amount
 FROM reconciliation_cases c
@@ -99,7 +99,7 @@ SELECT
     sum(c.difference_amount)                    AS net_difference_amount,
     sum(abs(c.difference_amount))               AS absolute_difference_amount
 FROM reconciliation_cases c
-WHERE c.computed_status NOT IN ('MATCHED', 'NO_FINANCIAL_EFFECT', 'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING')
+WHERE c.computed_status NOT IN ('MATCHED', 'NO_FINANCIAL_EFFECT', 'PENDING_MATCH', 'REFUND_PENDING', 'REVERSAL_PENDING', 'CHARGEBACK_PENDING')
 GROUP BY 1, 2, 3, 4, 5;
 
 -- 4. Source completeness per business date (see docs/business_rules.md for denominators).

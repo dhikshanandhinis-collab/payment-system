@@ -6,8 +6,8 @@
 # Waiting periods are SYNTHETIC engineering defaults chosen so that the local demo surfaces exceptions
 # within minutes. They are NOT Bell service-level agreements; production values must come from the
 # business owners of each payment channel.
-rule_version: "2026.10.1"
-description: "Initial rule set: shared payment_id matching, exact decimal comparison, per-method waits."
+rule_version: "2026.11.1"
+description: "Adds chargebacks/chargeback reversals and a bank business-day calendar for bank-settled methods."
 
 grace_periods_seconds:
   application_record: 300          # processor/ledger record seen, waiting for the app record
@@ -25,7 +25,36 @@ grace_periods_seconds:
     PRE_AUTHORIZED_DEBIT: 900
   refund_posting: 600              # processor refund seen, waiting for REFUND_DEBIT
   reversal_posting: 600            # processor reversal seen, waiting for ledger REVERSAL
-  orphan_reference: 600            # refund/reversal references an unknown transaction
+  chargeback_posting: 900          # chargeback (or its reversal) seen, waiting for CHARGEBACK_DEBIT/CREDIT
+  orphan_reference: 600            # refund/reversal/chargeback references an unknown transaction
+
+# Waiting periods of bank-settled methods only elapse on bank business days: a pre-authorized debit
+# initiated on Friday evening before a long weekend is not "missing" on Monday.
+# The holiday list is an ILLUSTRATIVE set of Canadian bank holidays (observed dates). Production must load
+# the official Payments Canada non-processing days.
+business_calendar:
+  timezone: "America/Toronto"
+  non_business_weekdays: [5, 6]    # Saturday, Sunday (Monday = 0)
+  business_day_methods: [PRE_AUTHORIZED_DEBIT, ONLINE_BANKING]
+  holidays:
+    - 2026-01-01  # New Year's Day
+    - 2026-04-03  # Good Friday
+    - 2026-05-18  # Victoria Day
+    - 2026-07-01  # Canada Day
+    - 2026-09-07  # Labour Day
+    - 2026-10-12  # Thanksgiving
+    - 2026-11-11  # Remembrance Day
+    - 2026-12-25  # Christmas Day
+    - 2026-12-28  # Boxing Day (observed)
+    - 2027-01-01  # New Year's Day
+    - 2027-03-26  # Good Friday
+    - 2027-05-24  # Victoria Day
+    - 2027-07-01  # Canada Day
+    - 2027-09-06  # Labour Day
+    - 2027-10-11  # Thanksgiving
+    - 2027-11-11  # Remembrance Day
+    - 2027-12-27  # Christmas Day (observed)
+    - 2027-12-28  # Boxing Day (observed)
 
 timestamp_rules:
   max_future_skew_seconds: 300

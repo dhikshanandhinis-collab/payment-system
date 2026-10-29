@@ -25,7 +25,8 @@ from processing.rules import ReconciliationRules
 from processing.validation import EventMetadata
 
 SILVER_TABLES = frozenset(
-    {"application_payment_events", "processor_transactions", "payment_refunds", "payment_reversals", "billing_ledger_entries"}
+    {"application_payment_events", "processor_transactions", "payment_refunds", "payment_reversals",
+     "payment_chargebacks", "billing_ledger_entries"}
 )
 
 
@@ -361,6 +362,9 @@ def load_snapshot(cur: Cursor, payment_id: str) -> PaymentSnapshot:
         UNION ALL
         SELECT reversal_id, payment_id, 'REVERSAL', original_processor_transaction_id, amount, currency, event_time
         FROM payment_reversals WHERE payment_id = %(p)s
+        UNION ALL
+        SELECT chargeback_id, payment_id, chargeback_type, original_processor_transaction_id, amount, currency, event_time
+        FROM payment_chargebacks WHERE payment_id = %(p)s
         ORDER BY 7, 1
         """,
         {"p": payment_id},

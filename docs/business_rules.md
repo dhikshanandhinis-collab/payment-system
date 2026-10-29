@@ -51,7 +51,8 @@ All amounts are positive magnitudes. Signed effects are derived consistently:
 | Gross captured | Sum of distinct `CAPTURE` transactions (authorizations are excluded) |
 | Total refunded | Sum of distinct `REFUND`s whose original is a capture of this payment |
 | Total reversed | First `REVERSAL` per capture; further reversals of the same capture are flagged, not subtracted |
-| Net captured | Gross captured - total refunded - total reversed |
+| Net chargeback | `CHARGEBACK`s referencing a capture of this payment - `CHARGEBACK_REVERSAL`s referencing those chargebacks |
+| Net captured | Gross captured - total refunded - total reversed - net chargeback |
 | Billing amount (ledger net) | Sum over **effective** ledger entries of the payment: CREDIT +amount, DEBIT -amount |
 | Effective ledger entry | `posting_status = POSTED`, or referenced by a `POSTING_CONFIRMATION`; never `REJECTED`. PENDING entries are reported separately as `billing_pending_amount` |
 | Difference amount | Observed - expected for the comparison that determined the status (0 when matched) |
@@ -66,6 +67,13 @@ transaction already excluded.
 refunds accumulate; the same refund id (re-delivered) is stored once (Silver primary key). Refunds +
 reversals exceeding the capture produce `AMOUNT_MISMATCH / REFUNDS_EXCEED_CAPTURE`.
 
+**Chargebacks** (card-network disputes) reference the original capture. The billing ledger must post a
+`CHARGEBACK_DEBIT` with `processor_reference` = chargeback id and the same amount. When the merchant wins
+the dispute, the processor sends a `CHARGEBACK_REVERSAL` referencing the chargeback, and the ledger must
+post a matching `CHARGEBACK_CREDIT`. A case with a chargeback is `MATCHED / CHARGED_BACK` (or
+`CHARGEBACK_REVERSED` once the dispute is won and re-credited). Refunds + reversals + net chargebacks
+exceeding the capture produce `CHARGEBACKS_EXCEED_CAPTURE`.
+
 **No money movement.** The platform never initiates refunds, never posts to accounts and never
 contacts real systems; it only observes and reports.
 
@@ -79,6 +87,7 @@ summarized in `app_status` / `processor_outcome`; it is distinct from the reconc
 | PENDING_MATCH | pending | A counterpart is still inside its waiting period |
 | REFUND_PENDING | pending | A refund (or its original) awaits its counterpart within the waiting period |
 | REVERSAL_PENDING | pending | A reversal awaits its ledger counterpart within the waiting period |
+| CHARGEBACK_PENDING | pending | A chargeback (or its reversal) awaits its ledger counterpart within the waiting period |
 | MATCHED | resolved | All sources agree; amounts equal (exact decimal) |
 | NO_FINANCIAL_EFFECT | resolved | *(added)* All sources agree that no money moved (consistent decline, or app failure with no processor activity) |
 | AMOUNT_MISMATCH | exception | Amounts disagree |
@@ -90,7 +99,7 @@ summarized in `app_status` / `processor_outcome`; it is distinct from the reconc
 | DATA_QUALITY_ERROR | exception | Currency conflict, inconsistent app amounts, invalid or orphan references |
 | UNDER_REVIEW | manual | Operator review hold (engine keeps computing `computed_status`) |
 
-### Decision order (rule version 2026.10.1)
+### Decision order (rule version 2026.11.1)
 
 The engine ([processing/reconciliation_engine.py](../processing/reconciliation_engine.py)) recomputes the
 status from the full snapshot on every evaluation; the first matching rule wins:
@@ -116,10 +125,11 @@ status from the full snapshot on every evaluation; the first matching rule wins:
 8. No effective payment credit: pending until billing wait (from capture time, per method), then
    `MISSING_BILLING_POSTING / PAYMENT_CREDIT_MISSING` (or `PAYMENT_CREDIT_UNCONFIRMED` if only PENDING).
 9. Each refund needs an effective REFUND_DEBIT with `processor_reference` = refund id and equal amount
-   (`REFUND_PENDING` -> `REFUND_POSTING_MISSING`, or `REFUND_AMOUNT_MISMATCH`); same for reversals.
+   (`REFUND_PENDING` -> `REFUND_POSTING_MISSING`, or `REFUND_AMOUNT_MISMATCH`); same for reversals, and for
+   chargebacks (`CHARGEBACK_DEBIT`) and chargeback reversals (`CHARGEBACK_CREDIT`) via `CHARGEBACK_PENDING`.
 10. Ledger net != processor net -> `AMOUNT_MISMATCH / PROCESSOR_LEDGER_AMOUNT_MISMATCH`.
-11. Otherwise `MATCHED` with reason `REVERSED`, `FULLY_REFUNDED`, `PARTIALLY_REFUNDED`,
-    `MATCHED_WITH_ADJUSTMENT` or `FULL_MATCH`. An ambiguous app result (TIMEOUT/UNKNOWN) resolved by the
+11. Otherwise `MATCHED` with reason `REVERSED`, `CHARGED_BACK`, `CHARGEBACK_REVERSED`, `FULLY_REFUNDED`,
+    `PARTIALLY_REFUNDED`, `MATCHED_WITH_ADJUSTMENT` or `FULL_MATCH`. An ambiguous app result (TIMEOUT/UNKNOWN) resolved by the
     processor is recorded as finding `APP_OUTCOME_RESOLVED_BY_PROCESSOR`.
 
 ```mermaid
@@ -161,7 +171,7 @@ Every status, reason or amount change appends a row to `reconciliation_history`.
 * `next_evaluation_at` - waiting-period deadline. The timeout sweeper re-queues due cases, so a case
   becomes an exception **only** when its waiting period expires and the counterpart is still missing.
 
-## 5. Waiting periods (rule version 2026.10.1)
+## 5. Waiting periods (rule version 2026.11.1)
 
 | Wait | Starts at | Default | Card | Online banking | PAD |
 |---|---|---|---|---|---|
@@ -169,7 +179,14 @@ Every status, reason or amount change appends a row to `reconciliation_history`.
 | processor_outcome | app initiation | 300 s | 180 s | 600 s | 900 s |
 | billing_posting | capture event time | 300 s | 240 s | 600 s | 900 s |
 | refund_posting / reversal_posting | refund / reversal event time | 600 s | | | |
-| orphan_reference | refund / reversal event time | 600 s | | | |
+| chargeback_posting | chargeback / chargeback reversal event time | 900 s | | | |
+| orphan_reference | refund / reversal / chargeback event time | 600 s | | | |
+
+**Business-day calendar.** For bank-settled methods (`PRE_AUTHORIZED_DEBIT`, `ONLINE_BANKING`) waiting
+periods only elapse on bank business days in `America/Toronto`: weekends and the configured holidays are
+skipped, so a pre-authorized debit initiated before a long weekend is not reported missing during it.
+Card waits are calendar time. The holiday list in the rules file is illustrative; production must load the
+official Payments Canada non-processing days (and bump `rule_version`).
 
 Event time (not ingestion time) is used so historical backfills evaluate deadlines correctly. These
 values are demo-sized; real values must come from channel owners. Changing them requires a new

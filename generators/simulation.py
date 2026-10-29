@@ -57,6 +57,8 @@ class WorldOutcome:
     approved: bool
     refunds: tuple[tuple[Decimal, float], ...]  # (amount, seconds after capture)
     reversal_after_s: float | None
+    chargeback_after_s: float | None = None
+    chargeback_reversal_after_s: float | None = None  # dispute won by the merchant
 
 
 @dataclass(order=True)
@@ -124,7 +126,17 @@ def world_outcome(settings: SimulationSettings, intent: PaymentIntent) -> WorldO
             refunds.append((intent.amount, rng.uniform(settings.refund_after_min_s, settings.refund_after_max_s)))
     elif approved and rng.random() < settings.reversal_rate:
         reversal = rng.uniform(settings.refund_after_min_s, settings.refund_after_max_s)
-    return WorldOutcome(approved, tuple(sorted(refunds, key=lambda r: r[1])), reversal)
+    chargeback: float | None = None
+    chargeback_reversal: float | None = None
+    # Separate stream so adding chargebacks does not change any previously simulated outcome.
+    cb_rng = _rng(settings, intent.index, "chargeback")
+    if approved and not refunds and reversal is None and cb_rng.random() < settings.chargeback_rate:
+        chargeback = cb_rng.uniform(settings.refund_after_min_s, settings.refund_after_max_s) * 2
+        if cb_rng.random() < settings.chargeback_reversal_share:
+            chargeback_reversal = chargeback + cb_rng.uniform(settings.refund_after_min_s, settings.refund_after_max_s)
+    return WorldOutcome(
+        approved, tuple(sorted(refunds, key=lambda r: r[1])), reversal, chargeback, chargeback_reversal
+    )
 
 
 def processor_ids(intent: PaymentIntent) -> dict[str, str]:
@@ -135,6 +147,8 @@ def processor_ids(intent: PaymentIntent) -> dict[str, str]:
         "capture": f"PTX-C-{suffix}",
         "decline": f"PTX-D-{suffix}",
         "reversal": f"PTX-V-{suffix}",
+        "chargeback": f"PTX-CB-{suffix}",
+        "chargeback_reversal": f"PTX-CBR-{suffix}",
     }
 
 
@@ -288,6 +302,13 @@ def processor_events(b: _SourceBuilder, world: WorldOutcome) -> datetime | None:
     if world.reversal_after_s is not None:
         t_rev = t_cap + timedelta(seconds=world.reversal_after_s)
         b.emit(body("REVERSAL", ids["reversal"], "REVERSED", captured, t_rev, ids["capture"]), t_rev)
+    if world.chargeback_after_s is not None:
+        t_cb = t_cap + timedelta(seconds=world.chargeback_after_s)
+        b.emit(body("CHARGEBACK", ids["chargeback"], "CHARGED_BACK", captured, t_cb, ids["capture"]), t_cb)
+        if world.chargeback_reversal_after_s is not None:
+            t_cbr = t_cap + timedelta(seconds=world.chargeback_reversal_after_s)
+            b.emit(body("CHARGEBACK_REVERSAL", ids["chargeback_reversal"], "CHARGEBACK_REVERSED", captured, t_cbr,
+                        ids["chargeback"]), t_cbr)
     return t_cap
 
 
@@ -365,6 +386,14 @@ def ledger_events(b: _SourceBuilder, world: WorldOutcome) -> None:
                   original_ledger_entry_id=credit_id, processor_reference=ids["reversal"]),
             t_rev,
         )
+    if world.chargeback_after_s is not None:
+        t_cb = t_credit + timedelta(seconds=world.chargeback_after_s + rng.uniform(2, 10))
+        b.emit(entry("CHARGEBACK_DEBIT", f"LED-CB-{suffix}", "DEBIT", it.amount, "POSTED", t_cb,
+                     processor_reference=ids["chargeback"]), t_cb)
+        if world.chargeback_reversal_after_s is not None:
+            t_cbr = t_credit + timedelta(seconds=world.chargeback_reversal_after_s + rng.uniform(2, 10))
+            b.emit(entry("CHARGEBACK_CREDIT", f"LED-CBR-{suffix}", "CREDIT", it.amount, "POSTED", t_cbr,
+                         processor_reference=ids["chargeback_reversal"]), t_cbr)
 
 
 def build_source_events(

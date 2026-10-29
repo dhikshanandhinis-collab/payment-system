@@ -261,6 +261,97 @@ def test_distinct_duplicate_capture_is_duplicate_financial_effect(rules):
     assert r.processor_amount == D("200.00") and r.difference_amount == D("100.00")
 
 
+# ---------------------------------------------------------------- chargebacks
+
+
+def chargeback(amount="100.00", t=OLD + timedelta(minutes=10), cb_id="CB-1", original="C-T-000001"):
+    return proc(P, "CHARGEBACK", cb_id, amount, t, original=original)
+
+
+def test_chargeback_with_ledger_debit_is_matched(rules):
+    events = matched_payment(P, "100.00") + [
+        chargeback(),
+        ledger(P, "CHARGEBACK_DEBIT", "LCB-1", "100.00", OLD + timedelta(minutes=11), processor_reference="CB-1"),
+    ]
+    r = run(events, rules)
+    assert r.status is S.MATCHED and r.reason_code == "CHARGED_BACK"
+    assert (r.chargeback_amount, r.processor_net_amount, r.billing_amount) == (D("100.00"), D("0.00"), D("0.00"))
+    assert r.source_refs["chargeback_ids"] == ["CB-1"]
+    assert "CB-1" not in r.source_refs["processor_transaction_ids"]
+    assert r.amounts()["chargeback_amount"] == "100.00"
+
+
+def test_chargeback_pending_then_missing_debit(rules):
+    t_cb = NOW - timedelta(seconds=30)
+    events = matched_payment(P) + [chargeback(t=t_cb)]
+    pending = run(events, rules)
+    assert pending.status is S.CHARGEBACK_PENDING and pending.reason_code == "AWAITING_CHARGEBACK_POSTING"
+    assert pending.next_evaluation_at == t_cb + rules.chargeback_posting_grace
+    missing = run(events, rules, now=NOW + rules.chargeback_posting_grace)
+    assert missing.status is S.MISSING_BILLING_POSTING and missing.reason_code == "CHARGEBACK_POSTING_MISSING"
+
+
+def test_won_dispute_restores_the_payment(rules):
+    events = matched_payment(P, "100.00") + [
+        chargeback(),
+        ledger(P, "CHARGEBACK_DEBIT", "LCB-1", "100.00", OLD + timedelta(minutes=11), processor_reference="CB-1"),
+        proc(P, "CHARGEBACK_REVERSAL", "CBR-1", "100.00", OLD + timedelta(minutes=30), original="CB-1"),
+        ledger(P, "CHARGEBACK_CREDIT", "LCBR-1", "100.00", OLD + timedelta(minutes=31), processor_reference="CBR-1"),
+    ]
+    r = run(events, rules)
+    assert r.status is S.MATCHED and r.reason_code == "CHARGEBACK_REVERSED"
+    assert r.chargeback_amount == D("0.00") and r.processor_net_amount == D("100.00") and r.billing_amount == D("100.00")
+
+
+def test_chargeback_debit_amount_mismatch(rules):
+    events = matched_payment(P) + [
+        chargeback("100.00"),
+        ledger(P, "CHARGEBACK_DEBIT", "LCB-1", "90.00", OLD + timedelta(minutes=11), processor_reference="CB-1"),
+    ]
+    r = run(events, rules)
+    assert r.status is S.AMOUNT_MISMATCH and r.reason_code == "CHARGEBACK_AMOUNT_MISMATCH"
+    assert r.difference_amount == D("-10.00")
+
+
+def test_chargeback_on_top_of_full_refund_exceeds_capture(rules):
+    events = matched_payment(P, "50.00") + [
+        proc(P, "REFUND", "R-1", "50.00", OLD + timedelta(minutes=5), original="C-T-000001"),
+        chargeback("50.00"),
+    ]
+    r = run(events, rules)
+    assert r.status is S.AMOUNT_MISMATCH and r.reason_code == "CHARGEBACKS_EXCEED_CAPTURE"
+    assert r.difference_amount == D("-50.00")
+
+
+def test_chargeback_targets_are_validated(rules):
+    assert run(matched_payment(P) + [chargeback(original="A-T-000001")], rules).reason_code == "INVALID_CHARGEBACK_TARGET"
+    bad_reversal = proc(P, "CHARGEBACK_REVERSAL", "CBR-1", "100.00", OLD, original="C-T-000001")
+    assert run(matched_payment(P) + [bad_reversal], rules).reason_code == "INVALID_CHARGEBACK_REVERSAL_TARGET"
+    orphan = matched_payment(P) + [chargeback(original="C-UNKNOWN", t=NOW - timedelta(seconds=5))]
+    assert run(orphan, rules).status is S.CHARGEBACK_PENDING
+    late = run(orphan, rules, now=NOW + rules.orphan_reference_grace)
+    assert late.status is S.DATA_QUALITY_ERROR and late.reason_code == "ORPHAN_CHARGEBACK_REFERENCE"
+
+
+# ---------------------------------------------------------------- business-day calendar
+
+
+def test_bank_method_waiting_period_skips_weekend_and_holiday(rules):
+    from datetime import UTC, datetime
+
+    # Thursday 2026-12-24 23:55 Toronto. Dec 25 (Fri) and Dec 28 (Mon, Boxing Day observed) are holidays.
+    start = datetime(2026, 12, 25, 4, 55, tzinfo=UTC)
+    events = [app(P, t=start, method="PRE_AUTHORIZED_DEBIT")]
+    grace = rules.processor_grace("PRE_AUTHORIZED_DEBIT")
+    r = run(events, rules, now=start + grace + timedelta(days=3))
+    assert r.status is S.PENDING_MATCH and r.reason_code == "AWAITING_PROCESSOR_OUTCOME"
+    # 5 min of business time are used on the 24th; the rest of the wait resumes Tue 29th 00:00 Toronto.
+    assert r.next_evaluation_at == datetime(2026, 12, 29, 5, 0, tzinfo=UTC) + grace - timedelta(minutes=5)
+
+    card = run([app(P, t=start, method="CREDIT_CARD")], rules, now=start + timedelta(days=3))
+    assert card.status is S.MISSING_PROCESSOR_RECORD  # card waits are calendar time
+
+
 def test_duplicate_ledger_credit(rules):
     events = matched_payment(P) + [ledger(P, "PAYMENT_CREDIT", "L-DUP", "100.00", OLD)]
     assert run(events, rules).reason_code == "DUPLICATE_LEDGER_CREDIT"
