@@ -1,0 +1,146 @@
+name: production-run
+
+# Scheduled production sessions on a GitHub-hosted runner: restore the database from the previous run,
+# run the full pipeline (simulated sources -> Kafka -> ingestion -> reconciliation -> batch), publish a
+# run report, then snapshot the database for the next run.
+on:
+  schedule:
+    - cron: "30 3 * * *"  # 09:00 IST
+    - cron: "30 13 * * *" # 19:00 IST
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long the sources produce events (minutes)"
+        default: "40"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RUN_MINUTES: ${{ inputs.minutes || '40' }}
+      PGVOLUME: bell-recon_postgres-data
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Production environment (fresh random passwords every run)
+        run: |
+          : > /tmp/no-smtp.env
+          bash deploy/init_env.sh /tmp/no-smtp.env .env
+          sed -i 's/^SIM_PAYMENTS_PER_SECOND=.*/SIM_PAYMENTS_PER_SECOND=2/' .env
+          echo "RUN_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          mkdir -p state run-report
+
+      - name: Restore database snapshot from the previous run
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: state/pgdata.tgz
+          key: pgdata-${{ github.run_id }}
+          restore-keys: pgdata-
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Load previous database
+        if: steps.restore.outputs.cache-matched-key != ''
+        run: |
+          docker compose create postgres
+          docker run --rm -v "$PGVOLUME:/data" -v "$PWD/state:/state:ro" alpine \
+            tar xzf /state/pgdata.tgz --numeric-owner -C /data
+          echo "Restored snapshot ${{ steps.restore.outputs.cache-matched-key }}"
+
+      - name: Start PostgreSQL and apply this run's superuser password
+        run: |
+          docker compose up -d postgres
+          for _ in $(seq 1 30); do docker compose exec -T postgres pg_isready -U postgres -q && break; sleep 2; done
+          pw=$(grep '^DB_SUPERUSER_PASSWORD=' .env | cut -d= -f2-)
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -q -U postgres -d postgres \
+            -c "ALTER ROLE postgres PASSWORD '$pw'"
+
+      - name: Start the pipeline
+        run: |
+          docker compose up -d
+          for svc in ingestion reconciliation batch-scheduler; do
+            state=unknown
+            for _ in $(seq 1 40); do
+              state=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q "$svc")" 2>/dev/null || echo unknown)
+              [ "$state" = healthy ] && break
+              sleep 5
+            done
+            echo "$svc: $state"
+            [ "$state" = healthy ] || { docker compose logs --tail 80 "$svc"; exit 1; }
+          done
+
+      - name: Produce events for ${{ env.RUN_MINUTES }} minutes
+        run: |
+          end=$((SECONDS + RUN_MINUTES * 60))
+          while [ "$SECONDS" -lt "$end" ]; do
+            sleep 300
+            docker compose exec -T postgres psql -At -U postgres -d recon \
+              -c "SELECT now()::time(0) || '  events this run: ' || count(*) FROM recon.raw_payment_events WHERE ingestion_time >= '$RUN_START'"
+          done
+
+      - name: Stop sources and let ingestion and reconciliation drain
+        run: |
+          docker compose stop mybell-producer processor-producer billing-producer batch-scheduler
+          sleep 120
+
+      - name: Business-date reconciliation for today
+        run: |
+          docker compose run --rm tools python -m batch.daily_reconciliation \
+            --business-date "$(TZ=America/Toronto date +%F)" --triggered-by github-actions:production-run
+
+      - name: Run report
+        if: always()
+        run: |
+          q() { docker compose exec -T postgres psql -U postgres -d recon -P pager=off -c "$1"; }
+          {
+            echo "## Production run $(date -u +%F' '%H:%MZ)"
+            echo '```'
+            q "SELECT
+                 (SELECT count(*) FROM recon.raw_payment_events WHERE ingestion_time >= '$RUN_START') AS events_this_run,
+                 (SELECT count(*) FROM recon.raw_payment_events) AS events_all_runs,
+                 (SELECT count(*) FROM recon.reconciliation_cases) AS cases_all_runs,
+                 (SELECT count(*) FROM recon.quarantined_events WHERE quarantined_at >= '$RUN_START') AS quarantined_this_run"
+            q "SELECT round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM ingestion_time - kafka_timestamp)))::numeric, 2) AS kafka_to_db_p50_s,
+                      round((percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM ingestion_time - kafka_timestamp)))::numeric, 2) AS kafka_to_db_p95_s
+               FROM recon.raw_payment_events WHERE ingestion_time >= '$RUN_START'"
+            q "SELECT reconciliation_status, count(*) AS cases FROM recon.reconciliation_cases GROUP BY 1 ORDER BY 2 DESC"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY" > run-report/summary.md
+          docker compose run --rm tools python -m scripts.report --all > run-report/reports.txt 2>&1 || true
+          for p in 9101 9102 9106; do curl -fsS "http://127.0.0.1:$p/metrics" > "run-report/metrics-$p.txt" || true; done
+          docker compose logs --no-color --timestamps > run-report/service-logs.txt 2>&1 || true
+
+      - name: Stop cleanly and snapshot the database
+        if: always()
+        run: |
+          docker compose stop -t 60
+          if docker volume inspect "$PGVOLUME" > /dev/null 2>&1; then
+            docker run --rm -v "$PGVOLUME:/data:ro" -v "$PWD/state:/state" alpine \
+              tar czf /state/pgdata.tgz --numeric-owner -C /data .
+            ls -lh state/pgdata.tgz
+          fi
+
+      - name: Save database snapshot for the next run
+        if: always() && hashFiles('state/pgdata.tgz') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: state/pgdata.tgz
+          key: pgdata-${{ github.run_id }}
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-run-${{ github.run_number }}
+          path: run-report/
+          retention-days: 30

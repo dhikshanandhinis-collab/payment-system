@@ -130,6 +130,15 @@ quarantine handling, disputed cases, rule-version deployment and more.
 
 ### 4.1 Production deployment (single VM)
 
+**Scheduled production runs on GitHub Actions (no cloud account needed):**
+[.github/workflows/production-run.yml](.github/workflows/production-run.yml) runs twice a day (09:00 and
+19:00 IST, or on demand via *Actions -> production-run -> Run workflow*). Each run restores the PostgreSQL
+data from the previous run, starts the full stack with fresh random passwords, produces events for 40
+minutes, drains, runs the business-date reconciliation, publishes a run summary (events, latency, case
+statuses) plus reports/metrics/logs as an artifact, and snapshots the database for the next run.
+GitHub pauses scheduled workflows after 60 days without repository activity.
+
+**Always-on VM alternative:**
 Target: one Ubuntu 24.04 VM on **Azure for Students** (default `Standard_B2s`, 2 vCPU / 4 GB + 4 GB swap,
 64 GB Standard SSD; roughly USD 35-45/month of student credit - check the Azure cost view). All ports
 stay bound to `127.0.0.1`; reach Grafana through an SSH tunnel (`ssh -L 3000:localhost:3000 user@vm`).
